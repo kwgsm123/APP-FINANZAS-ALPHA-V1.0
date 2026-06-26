@@ -2,22 +2,22 @@
   "name": "Mis Finanzas",
   "short_name": "Finanzas",
   "description": "Control de gastos e ingresos personales",
-  "start_url": "./index.html",
+  "start_url": "/APP-FINANZAS-ALPHA-V1.0/index.html",
+  "scope": "/APP-FINANZAS-ALPHA-V1.0/",
   "display": "standalone",
   "background_color": "#16a34a",
   "theme_color": "#16a34a",
   "orientation": "portrait",
   "lang": "es",
-  "scope": "./",
   "icons": [
     {
-      "src": "icons/icon-192.png",
+      "src": "/APP-FINANZAS-ALPHA-V1.0/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "icons/icon-512.png",
+      "src": "/APP-FINANZAS-ALPHA-V1.0/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
