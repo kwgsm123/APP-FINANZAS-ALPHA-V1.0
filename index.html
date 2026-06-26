@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="theme-color" content="#16a34a" id="meta-theme"/>
+  <meta name="description" content="Control de finanzas personales"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <title>Mis Finanzas</title>
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body class="tema-verde">
+
+<!-- ═══════════════════ INICIO ═══════════════════ -->
+<div class="pantalla activa" id="pantalla-inicio">
+  <div class="header-inicio">
+    <div>
+      <p class="saludo-label">Hola 👋</p>
+      <h1 class="saludo-nombre" id="nombre-usuario">Mi Cuenta</h1>
+    </div>
+    <button class="btn-notif" aria-label="Perfil" onclick="App.irA('perfil')">
+      <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+    </button>
+  </div>
+
+  <!-- Tarjeta saldo -->
+  <div class="card-saldo" id="card-saldo-el">
+    <p class="card-saldo-label">Saldo disponible</p>
+    <h2 class="card-saldo-monto" id="saldo-principal">Q 0.00</h2>
+    <div class="card-saldo-mini">
+      <div class="mini-stat">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+        <span>Ingresos</span><strong id="mini-ingresos">Q 0.00</strong>
+      </div>
+      <div class="mini-sep"></div>
+      <div class="mini-stat">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>
+        <span>Gastos</span><strong id="mini-gastos">Q 0.00</strong>
+      </div>
+    </div>
+  </div>
+
+  <!-- Banner salario (aparece si hay salario registrado) -->
+  <div class="banner-salario" id="banner-salario" style="display:none">
+    <div class="banner-sal-info">
+      <span class="banner-sal-ico">💼</span>
+      <div>
+        <p class="banner-sal-label">Salario mensual</p>
+        <p class="banner-sal-monto" id="banner-sal-monto">Q 0.00</p>
+      </div>
+    </div>
+    <button class="banner-sal-btn" onclick="UI.abrirModalEditarSalario()" aria-label="Editar salario">
+      <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      Editar
+    </button>
+  </div>
+
+  <!-- Banner límite excedido -->
+  <div id="banner-limite-inicio" style="display:none"></div>
+
+  <!-- Alertas pendientes -->
+  <div class="alertas-pendientes" id="alertas-pendientes" style="display:none"></div>
+
+  <!-- Banner tarjetas excedidas -->
+  <div id="banner-tarjetas-excedidas" style="display:none" class="banner-tc-excedidas"></div>
+
+  <div class="seccion-titulo-row">
+    <h2 class="seccion-titulo">Por categoría</h2>
+    <button class="link-ver" onclick="App.irA('transacciones')">Ver todo</button>
+  </div>
+  <div class="chips-scroll" id="chips-categorias"></div>
+
+  <div class="seccion-titulo-row">
+    <h2 class="seccion-titulo">Recientes</h2>
+    <button class="link-ver" onclick="App.irA('transacciones')">Ver todo</button>
+  </div>
+  <div class="lista-trans" id="lista-recientes"></div>
+  <div style="height:100px"></div>
+</div>
+
+<!-- ═══════════════════ TRANSACCIONES ═══════════════════ -->
+<div class="pantalla" id="pantalla-transacciones">
+  <div class="nav-top">
+    <h2 class="nav-titulo">Transacciones</h2>
+    <div class="filtros-tipo">
+      <button class="filtro-btn activo" data-filtro="todas">Todas</button>
+      <button class="filtro-btn" data-filtro="ingreso">Ingresos</button>
+      <button class="filtro-btn" data-filtro="gasto">Gastos</button>
+    </div>
+  </div>
+  <div class="filtro-mes-row">
+    <button class="mes-nav" id="btn-mes-ant">&#8249;</button>
+    <span class="mes-label" id="mes-label">Junio 2025</span>
+    <button class="mes-nav" id="btn-mes-sig">&#8250;</button>
+  </div>
+
+  <!-- Límite mensual -->
+  <div id="limite-movimientos-wrap" style="display:none;padding:0 1rem;margin-bottom:0.75rem"></div>
+
+  <!-- Gráfica -->
+  <div class="grafica-wrap" id="grafica-wrap" style="display:none">
+    <div class="grafica-tabs">
+      <button class="grafica-tab activo" data-vista="donut">🍩 Categorías</button>
+      <button class="grafica-tab" data-vista="barras">📊 Ingresos vs Gastos</button>
+    </div>
+    <div class="grafica-contenedor">
+      <div id="grafica-canvas-wrap"></div>
+    </div>
+    <div class="grafica-leyenda" id="grafica-leyenda"></div>
+  </div>
+
+  <div class="lista-trans padded" id="lista-todas"></div>
+  <div style="height:100px"></div>
+</div>
+
+<!-- ═══════════════════ HISTORIAL ═══════════════════ -->
+<div class="pantalla" id="pantalla-historial">
+  <div class="nav-top"><h2 class="nav-titulo">Historial</h2></div>
+  <div class="historial-info"><p>Reporte mensual y meses anteriores archivados.</p></div>
+  <div class="lista-historial padded" id="lista-historial"></div>
+  <div style="height:100px"></div>
+</div>
+
+<!-- ═══════════════════ METAS ═══════════════════ -->
+<div class="pantalla" id="pantalla-metas">
+  <div class="nav-top">
+    <h2 class="nav-titulo">Mis metas</h2>
+    <button class="btn-accion-top" onclick="UI.abrirModalMeta()">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+  </div>
+  <div class="lista-metas padded" id="lista-metas"></div>
+  <div style="height:100px"></div>
+</div>
+
+<!-- ═══════════════════ PERFIL ═══════════════════ -->
+<div class="pantalla" id="pantalla-perfil">
+  <div class="perfil-header">
+    <div class="perfil-avatar" id="perfil-avatar">M</div>
+    <div>
+      <h2 class="perfil-nombre" id="perfil-nombre-txt">Mi Cuenta</h2>
+      <p class="perfil-sub">Tus finanzas, tu control</p>
+    </div>
+  </div>
+
+  <div class="ajustes-grupo">
+    <p class="ajustes-grupo-titulo">Mi perfil</p>
+    <div class="ajuste-item">
+      <label class="ajuste-label" for="p-nombre">Nombre</label>
+      <input class="ajuste-input" type="text" id="p-nombre" placeholder="Ej: Alex" maxlength="30"/>
+    </div>
+  </div>
+
+  <div class="ajustes-grupo">
+    <p class="ajustes-grupo-titulo">Apariencia</p>
+    <div class="ajuste-item">
+      <label class="ajuste-label">Tema de color</label>
+      <div class="temas-grid" id="temas-grid"></div>
+    </div>
+    <div class="ajuste-item">
+      <label class="ajuste-label">Modo oscuro</label>
+      <label class="toggle-switch">
+        <input type="checkbox" id="cfg-oscuro"/>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="ajustes-grupo">
+    <p class="ajustes-grupo-titulo">Datos</p>
+    <button class="ajuste-btn ajuste-btn-peligro" onclick="UI.confirmarBorrarDatos()">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+      Borrar todos los datos
+    </button>
+  </div>
+
+  <div class="version-tag">Mis Finanzas v3.2 · Datos guardados localmente</div>
+  <div style="height:100px"></div>
+</div>
+
+<!-- ═══════════════════ TARJETAS ═══════════════════ -->
+<div class="pantalla" id="pantalla-tarjetas">
+  <div class="nav-top">
+    <h2 class="nav-titulo">Mis tarjetas</h2>
+    <button class="btn-accion-top" onclick="UI.abrirModalTarjeta()" aria-label="Agregar tarjeta">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+  </div>
+  <div class="lista-tarjetas padded" id="lista-tarjetas"></div>
+  <div style="height:100px"></div>
+</div>
+
+<!-- ═══════════════════ PRESUPUESTO ═══════════════════ -->
+<div class="pantalla" id="pantalla-presupuesto">
+  <div class="nav-top">
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="btn-back" onclick="App.irA('inicio')" aria-label="Volver">
+        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <h2 class="nav-titulo">Calculadora de presupuesto</h2>
+    </div>
+  </div>
+
+  <div class="presup-contenido padded">
+    <!-- Nombre del presupuesto -->
+    <div class="presup-seccion">
+      <div class="form-campo">
+        <label class="campo-label" for="presup-nombre">¿Para qué es este presupuesto?</label>
+        <input class="campo-input" type="text" id="presup-nombre" placeholder="Ej: Laptop nueva, Viaje a la playa..." maxlength="60"/>
+      </div>
+    </div>
+
+    <!-- Ingreso base -->
+    <div class="presup-card-ingreso">
+      <div class="presup-ing-header">
+        <div>
+          <p class="presup-ing-label">💰 Presupuesto disponible <span style="font-size:10px;opacity:0.7;font-weight:400">(toca el número para editar)</span></p>
+          <p class="presup-ing-sub">Basado en tu salario configurado</p>
+        </div>
+        <button class="presup-ing-edit" onclick="UI.presupuestoEditarIngreso()" aria-label="Editar">
+          <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+      </div>
+      <input class="presup-ing-input" type="number" id="presup-ingreso" placeholder="0.00" min="0" step="0.01" inputmode="decimal" oninput="UI.presupuestoRecalcular()"/>
+    </div>
+
+    <!-- Gastos fijos (auto-cargados de recurrentes) -->
+    <div class="presup-seccion">
+      <div class="presup-seccion-header">
+        <p class="presup-seccion-titulo">📋 Gastos fijos del mes</p>
+        <button class="presup-add-btn" onclick="UI.presupuestoAgregarItem('fijos')" aria-label="Agregar gasto fijo">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Agregar
+        </button>
+      </div>
+      <p class="presup-seccion-hint">Se cargan desde tus servicios recurrentes</p>
+      <div id="presup-lista-fijos" class="presup-lista"></div>
+    </div>
+
+    <!-- Gastos variables (libre) -->
+    <div class="presup-seccion">
+      <div class="presup-seccion-header">
+        <p class="presup-seccion-titulo">🎯 Otros gastos del mes</p>
+        <button class="presup-add-btn" onclick="UI.presupuestoAgregarItem('variables')" aria-label="Agregar gasto variable">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Agregar
+        </button>
+      </div>
+      <p class="presup-seccion-hint">Comida, ropa, gustos, salidas… lo que quieras</p>
+      <div id="presup-lista-variables" class="presup-lista"></div>
+    </div>
+
+    <!-- Artículo a adquirir -->
+    <div class="presup-seccion">
+      <div class="presup-seccion-header">
+        <p class="presup-seccion-titulo">🛍️ Lo que quiero adquirir</p>
+        <button class="presup-add-btn" onclick="UI.presupuestoAgregarItem('extras')" aria-label="Agregar artículo">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Agregar
+        </button>
+      </div>
+      <p class="presup-seccion-hint">Artículos o compras nuevas que planeas hacer</p>
+      <div id="presup-lista-extras" class="presup-lista"></div>
+    </div>
+
+    <!-- Resumen -->
+    <div class="presup-resumen" id="presup-resumen">
+      <div class="presup-res-row">
+        <span>Presupuesto</span>
+        <strong id="presup-res-ingreso">Q 0.00</strong>
+      </div>
+      <div class="presup-res-row">
+        <span>Gastos fijos</span>
+        <strong id="presup-res-fijos" style="color:var(--gasto)">- Q 0.00</strong>
+      </div>
+      <div class="presup-res-row">
+        <span>Otros gastos</span>
+        <strong id="presup-res-variables" style="color:var(--gasto)">- Q 0.00</strong>
+      </div>
+      <div class="presup-res-row">
+        <span>Lo que quiero adquirir</span>
+        <strong id="presup-res-extras" style="color:var(--gasto)">- Q 0.00</strong>
+      </div>
+      <div class="presup-res-divisor"></div>
+      <div class="presup-res-row presup-res-total">
+        <span id="presup-res-label">Saldo restante</span>
+        <strong id="presup-res-saldo">Q 0.00</strong>
+      </div>
+      <div class="presup-barra-bg" style="margin-top:12px">
+        <div class="presup-barra-fill" id="presup-barra-fill"></div>
+      </div>
+      <p class="presup-barra-label" id="presup-barra-label">0% del presupuesto usado</p>
+    </div>
+
+    <!-- Botones acción -->
+    <div style="display:flex;gap:10px;margin-top:4px">
+      <button class="btn-guardar" onclick="UI.presupuestoLimpiar()" style="background:var(--fondo);color:var(--texto);box-shadow:none;flex:1;font-size:14px">
+        🗑️ Limpiar
+      </button>
+      <button class="btn-guardar" onclick="UI.presupuestoDescargarPDF()" style="background:var(--acento);flex:2;font-size:14px">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" style="display:inline;vertical-align:middle;margin-right:5px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Descargar PDF
+      </button>
+    </div>
+
+    <div style="height:30px"></div>
+  </div>
+</div>
+<nav class="bottom-nav" role="navigation">
+  <button class="nav-btn activo" data-pantalla="inicio">
+    <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+    <span>Inicio</span>
+  </button>
+  <button class="nav-btn" data-pantalla="transacciones">
+    <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    <span>Movimientos</span>
+  </button>
+  <button class="nav-btn nav-btn-fab" id="btn-fab" aria-label="Agregar">
+    <svg width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+  </button>
+  <button class="nav-btn" data-pantalla="tarjetas">
+    <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+    <span>Tarjetas</span>
+  </button>
+  <button class="nav-btn" id="btn-mas-menu">
+    <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none"/></svg>
+    <span>Más</span>
+  </button>
+</nav>
+
+<!-- ═══════════════════ MENÚ MÁS (DRAWER) ═══════════════════ -->
+<div class="modal-overlay" id="menu-mas" role="dialog" aria-modal="true" aria-label="Menú de opciones">
+  <div class="menu-mas-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="menu-mas-header">
+      <p class="menu-mas-titulo">Opciones</p>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('menu-mas')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="menu-mas-grid">
+      <!-- Metas -->
+      <button class="menu-mas-item" onclick="UI.cerrarModal('menu-mas'); App.irA('metas')">
+        <div class="menu-mas-ico" style="background:#fef3c7;color:#d97706">
+          <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+        </div>
+        <span class="menu-mas-label">Mis Metas</span>
+        <span class="menu-mas-sub">Ahorro y objetivos</span>
+      </button>
+
+      <!-- Historial -->
+      <button class="menu-mas-item" onclick="UI.cerrarModal('menu-mas'); App.irA('historial')">
+        <div class="menu-mas-ico" style="background:#e0f2fe;color:#0284c7">
+          <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        </div>
+        <span class="menu-mas-label">Historial</span>
+        <span class="menu-mas-sub">Meses anteriores</span>
+      </button>
+
+      <!-- Espacio vacío -->
+      <div class="menu-mas-item-empty"></div>
+
+      <!-- Presupuesto -->
+      <button class="menu-mas-item" onclick="UI.cerrarModal('menu-mas'); App.irA('presupuesto')">
+        <div class="menu-mas-ico" style="background:#ede9fe;color:#7c3aed">
+          <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 6v6l4 2"/></svg>
+        </div>
+        <span class="menu-mas-label">Presupuesto</span>
+        <span class="menu-mas-sub">Planifica una compra</span>
+      </button>
+
+      <!-- Perfil -->
+      <button class="menu-mas-item" onclick="UI.cerrarModal('menu-mas'); App.irA('perfil')">
+        <div class="menu-mas-ico" style="background:#fce7f3;color:#db2777">
+          <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+        </div>
+        <span class="menu-mas-label">Perfil</span>
+        <span class="menu-mas-sub">Cuenta y ajustes</span>
+      </button>
+
+      <!-- Espacio vacío -->
+      <div class="menu-mas-item-empty"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: REPORTES ═══════════════════ -->
+<div class="modal-overlay" id="modal-reportes" role="dialog" aria-modal="true">
+  <div class="modal-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3>📊 Descargar reporte</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-reportes')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <p style="font-size:13px;color:var(--texto2);margin-bottom:1.25rem;line-height:1.5">Selecciona el mes del que quieres descargar el reporte en HTML (imprimible como PDF).</p>
+    <div id="reportes-lista" style="display:flex;flex-direction:column;gap:10px;margin-bottom:1.25rem"></div>
+    <button class="btn-guardar" style="background:var(--fondo);color:var(--texto);box-shadow:none" onclick="UI.cerrarModal('modal-reportes')">Cerrar</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: NUEVA TRANSACCIÓN ═══════════════════ -->
+<div class="modal-overlay" id="modal-trans" role="dialog" aria-modal="true">
+  <div class="modal-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3 id="modal-trans-titulo">Nueva transacción</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-trans')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="tipo-tabs">
+      <button class="tipo-tab activo" data-tipo="gasto">Gasto</button>
+      <button class="tipo-tab" data-tipo="ingreso">Ingreso</button>
+    </div>
+    <div class="monto-grande-wrap">
+      <span class="monto-moneda">Q</span>
+      <input class="monto-grande-input" type="number" id="t-monto" placeholder="0.00" min="0.01" step="0.01" inputmode="decimal"/>
+    </div>
+    <div class="form-grid">
+      <div class="form-campo">
+        <label class="campo-label" for="t-desc">Descripción</label>
+        <input class="campo-input" type="text" id="t-desc" placeholder="Ej: Almuerzo, gasolina..." maxlength="60"/>
+      </div>
+      <div class="form-campo">
+        <label class="campo-label" for="t-cat">Categoría</label>
+        <select class="campo-input" id="t-cat"></select>
+      </div>
+      <div class="form-campo">
+        <label class="campo-label" for="t-fecha">Fecha</label>
+        <input class="campo-input" type="date" id="t-fecha"/>
+      </div>
+      <div class="form-campo">
+        <label class="campo-label" for="t-nota">Nota (opcional)</label>
+        <input class="campo-input" type="text" id="t-nota" placeholder="Detalles..." maxlength="100"/>
+      </div>
+      <!-- Selector tarjeta (solo aparece si hay tarjetas configuradas y es gasto) -->
+      <div class="form-campo" id="campo-tarjeta" style="display:none">
+        <label class="campo-label" for="t-tarjeta">Pagar con</label>
+        <select class="campo-input" id="t-tarjeta"></select>
+      </div>
+    </div>
+    <!-- Panel salario automático -->
+    <div class="salario-panel" id="salario-panel" style="display:none">
+      <div class="salario-panel-row">
+        <div>
+          <p class="salario-panel-titulo">Registrar automáticamente cada mes</p>
+          <p class="salario-panel-sub">Se agregará solo en el día indicado</p>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="t-auto-salario"/>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="salario-panel-row" id="salario-dia-row" style="display:none">
+        <label class="salario-panel-titulo" for="t-dia-salario">Día del mes que llega</label>
+        <input class="ajuste-input" type="number" id="t-dia-salario" min="1" max="31" value="1" style="width:70px"/>
+      </div>
+    </div>
+
+    <!-- Panel servicio recurrente (aparece si categoría = servicios) -->
+    <div class="salario-panel" id="panel-recurrente" style="display:none">
+      <div class="salario-panel-row">
+        <div>
+          <p class="salario-panel-titulo">🔄 ¿Se repite cada mes?</p>
+          <p class="salario-panel-sub">Aparecerá como pendiente todos los meses</p>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="t-es-recurrente"/>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="salario-panel-row" id="recurrente-dia-row" style="display:none">
+        <label class="salario-panel-titulo" for="t-dia-recurrente">Día de vencimiento</label>
+        <input class="ajuste-input" type="number" id="t-dia-recurrente" min="1" max="28" value="1" style="width:70px"/>
+      </div>
+    </div>
+
+    <!-- Pendiente (para gastos excepto servicios, nunca en ingresos) -->
+    <div class="salario-panel" id="panel-prioridad" style="display:none">
+      <div class="salario-panel-row">
+        <div>
+          <p class="salario-panel-titulo">🔴 Marcar como pendiente</p>
+          <p class="salario-panel-sub">No descuenta del saldo hasta que lo marques como pagado</p>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="t-prioridad"/>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <div id="zona-error-trans"></div>
+    <button class="btn-guardar" id="btn-guardar-trans">Guardar</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: EDITAR SALARIO ═══════════════════ -->
+<div class="modal-overlay" id="modal-editar-salario" role="dialog" aria-modal="true">
+  <div class="modal-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3>Editar salario</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-editar-salario')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="form-grid">
+      <div class="form-campo">
+        <label class="campo-label" for="es-monto">Nuevo monto (Q)</label>
+        <input class="campo-input" type="number" id="es-monto" placeholder="0.00" min="0.01" step="0.01" inputmode="decimal"/>
+      </div>
+      <div class="form-campo">
+        <label class="campo-label" for="es-dia">Día del mes que llega</label>
+        <input class="campo-input" type="number" id="es-dia" min="1" max="31" value="1"/>
+      </div>
+    </div>
+    <div class="ajuste-item" style="padding:0 0 1rem">
+      <label class="ajuste-label">Registrar automáticamente</label>
+      <label class="toggle-switch">
+        <input type="checkbox" id="es-auto"/>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <button class="btn-guardar" id="btn-confirmar-editar-salario">Guardar cambios</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: NUEVA META ═══════════════════ -->
+<div class="modal-overlay" id="modal-meta" role="dialog" aria-modal="true">
+  <div class="modal-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3>Nueva meta</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-meta')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="form-grid">
+      <div class="form-campo">
+        <label class="campo-label" for="m-nombre">Nombre de la meta</label>
+        <input class="campo-input" type="text" id="m-nombre" placeholder="Ej: Viaje, laptop..." maxlength="50"/>
+      </div>
+      <div class="form-campo">
+        <label class="campo-label" for="m-objetivo">Monto objetivo (Q)</label>
+        <input class="campo-input" type="number" id="m-objetivo" placeholder="0.00" min="1" step="0.01" inputmode="decimal"/>
+      </div>
+      <div class="form-campo">
+        <label class="campo-label" for="m-actual">Ya ahorrado (Q)</label>
+        <input class="campo-input" type="number" id="m-actual" placeholder="0.00" min="0" step="0.01" inputmode="decimal"/>
+      </div>
+      <div class="form-campo">
+        <label class="campo-label" for="m-emoji">Emoji (opcional)</label>
+        <input class="campo-input" type="text" id="m-emoji" placeholder="🎯" maxlength="2"/>
+      </div>
+    </div>
+    <button class="btn-guardar" id="btn-guardar-meta">Guardar meta</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: ABONAR META ═══════════════════ -->
+<div class="modal-overlay" id="modal-abonar" role="dialog" aria-modal="true">
+  <div class="modal-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3 id="abonar-titulo">Abonar a meta</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-abonar')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="form-grid">
+      <div class="form-campo">
+        <label class="campo-label" for="abonar-monto">Monto a abonar (Q)</label>
+        <input class="campo-input" type="number" id="abonar-monto" placeholder="0.00" min="0.01" step="0.01" inputmode="decimal"/>
+      </div>
+    </div>
+    <div class="abonar-opciones">
+      <p class="campo-label" style="margin-bottom:10px">¿Descontar del saldo general?</p>
+      <div class="opcion-radio-grupo">
+        <label class="opcion-radio">
+          <input type="radio" name="abonar-tipo" value="descontar" id="radio-descontar" checked/>
+          <span class="radio-custom"></span>
+          <div><strong>Sí, descontar del saldo</strong><p>Se registra como gasto en tus transacciones</p></div>
+        </label>
+        <label class="opcion-radio">
+          <input type="radio" name="abonar-tipo" value="solo-meta" id="radio-solo-meta"/>
+          <span class="radio-custom"></span>
+          <div><strong>No, solo actualizar la meta</strong><p>Solo suma el progreso, sin afectar tu saldo</p></div>
+        </label>
+      </div>
+    </div>
+    <button class="btn-guardar" id="btn-confirmar-abono">Confirmar abono</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: SERVICIO ¿YA PAGADO? ═══════════════════ -->
+<div class="modal-overlay" id="modal-servicio-pago" role="dialog" aria-modal="true">
+  <div class="modal-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3>¿Ya pagaste este servicio?</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-servicio-pago')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="servicio-pago-resumen">
+      <span class="servicio-pago-ico">💡</span>
+      <div>
+        <p class="servicio-pago-nombre" id="servicio-pago-nombre">Servicio</p>
+        <p class="servicio-pago-monto" id="servicio-pago-monto">Q 0.00</p>
+      </div>
+    </div>
+
+    <div class="opcion-radio-grupo" style="margin-bottom:1.25rem">
+      <label class="opcion-radio" onclick="UI.confirmarPagoServicio(true)">
+        <span class="radio-custom"></span>
+        <div>
+          <strong>✅ Sí, ya lo pagué</strong>
+          <p>Se descuenta del saldo ahora mismo</p>
+        </div>
+      </label>
+      <label class="opcion-radio" onclick="UI.confirmarPagoServicio(false)">
+        <span class="radio-custom"></span>
+        <div>
+          <strong>🔴 No, aún está pendiente</strong>
+          <p>Aparecerá en alertas — no descuenta hasta que lo marques pagado</p>
+        </div>
+      </label>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: NUEVA TARJETA ═══════════════════ -->
+<div class="modal-overlay" id="modal-tarjeta" role="dialog" aria-modal="true">
+  <div class="modal-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3 id="modal-tarjeta-titulo">Nueva tarjeta</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-tarjeta')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="form-grid">
+      <div class="form-campo">
+        <label class="campo-label" for="tc-nombre">Nombre de la tarjeta</label>
+        <input class="campo-input" type="text" id="tc-nombre" placeholder="Ej: Visa, Mastercard..." maxlength="30"/>
+      </div>
+      <div class="form-campo">
+        <label class="campo-label" for="tc-banco">Banco (opcional)</label>
+        <input class="campo-input" type="text" id="tc-banco" placeholder="Ej: BAC, Industrial..." maxlength="30"/>
+      </div>
+      <div class="form-campo">
+        <label class="campo-label" for="tc-limite">Límite de crédito (Q)</label>
+        <input class="campo-input" type="number" id="tc-limite" placeholder="0.00" min="0" step="0.01" inputmode="decimal"/>
+      </div>
+      <div class="form-campo">
+        <label class="campo-label" for="tc-corte">Día de corte</label>
+        <input class="campo-input" type="number" id="tc-corte" placeholder="15" min="1" max="31"/>
+      </div>
+      <div class="form-campo">
+        <label class="campo-label" for="tc-color">Color</label>
+        <div class="tc-colores" id="tc-colores"></div>
+      </div>
+    </div>
+    <button class="btn-guardar" id="btn-guardar-tarjeta">Guardar tarjeta</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: LÍMITE MENSUAL ═══════════════════ -->
+<div class="modal-overlay" id="modal-limite" role="dialog" aria-modal="true">
+  <div class="modal-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3>Límite mensual de gastos</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-limite')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <p style="font-size:13px;color:var(--texto2);margin-bottom:1rem;line-height:1.5">Incluye todos los gastos del mes — efectivo y tarjetas. Se te advertirá antes de excederlo.</p>
+    <div class="form-grid">
+      <div class="form-campo">
+        <label class="campo-label" for="lim-monto">Límite mensual (Q)</label>
+        <input class="campo-input" type="number" id="lim-monto" placeholder="0.00" min="0" step="0.01" inputmode="decimal"/>
+      </div>
+    </div>
+    <button class="btn-guardar" id="btn-guardar-limite">Guardar límite</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: SELECCIONAR PAGO ═══════════════════ -->
+<div class="modal-overlay" id="modal-metodo-pago" role="dialog" aria-modal="true">
+  <div class="modal-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3>¿Cómo pagaste?</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-metodo-pago')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="opcion-radio-grupo" id="metodo-pago-opciones"></div>
+    <button class="btn-guardar" id="btn-confirmar-metodo">Confirmar</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: CONFIRMAR ELIMINAR TARJETA ═══════════════════ -->
+<div class="modal-overlay" id="modal-eliminar-tc" role="dialog" aria-modal="true">
+  <div class="modal-sheet" style="padding-bottom:1.5rem">
+    <div class="modal-drag-handle"></div>
+    <div style="text-align:center;padding:1.5rem 1rem 0.75rem">
+      <div style="font-size:48px;margin-bottom:0.75rem">🗑️</div>
+      <h3 style="font-size:18px;font-weight:700;margin-bottom:8px">¿Eliminar tarjeta?</h3>
+      <p id="eliminar-tc-txt" style="font-size:14px;color:var(--texto2);line-height:1.6;margin-bottom:0.75rem">Esta acción no se puede deshacer.</p>
+      <div style="background:var(--fondo);border:1px solid var(--borde);border-radius:10px;padding:10px 14px;font-size:13px;color:var(--texto2);text-align:left;line-height:1.6">
+        <strong style="color:var(--texto)">¿Qué pasará?</strong><br>
+        ✅ La tarjeta se eliminará<br>
+        💵 Los gastos con esa tarjeta pasarán a <strong>Efectivo</strong><br>
+        🗂️ El historial registrado se conserva
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;padding:1rem 1.25rem 0">
+      <button class="btn-guardar" id="btn-si-eliminar-tc" style="background:var(--gasto);flex:1">Sí, eliminar</button>
+      <button class="btn-guardar" onclick="UI.cerrarModal('modal-eliminar-tc')" style="background:var(--fondo);color:var(--texto);box-shadow:none;flex:1">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: ADVERTENCIA LÍMITE ═══════════════════ -->
+<div class="modal-overlay" id="modal-advertencia-limite" role="dialog" aria-modal="true">
+  <div class="modal-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3>⚠️ Límite mensual</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-advertencia-limite')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="advertencia-limite-body" id="advertencia-limite-body"></div>
+    <div style="display:flex;gap:10px;margin-top:1rem">
+      <button class="btn-guardar" id="btn-advertencia-continuar" style="background:var(--gasto)">Guardar de todas formas</button>
+      <button class="btn-guardar" id="btn-advertencia-cancelar" style="background:var(--fondo);color:var(--texto);box-shadow:none">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="alert" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>
