@@ -29,6 +29,7 @@
   <div class="card-saldo" id="card-saldo-el">
     <p class="card-saldo-label">Saldo disponible</p>
     <h2 class="card-saldo-monto" id="saldo-principal">Q 0.00</h2>
+    <div class="card-saldo-chart" id="card-saldo-chart"></div>
     <div class="card-saldo-mini">
       <div class="mini-stat">
         <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
@@ -95,6 +96,18 @@
     <span class="mes-label" id="mes-label">Junio 2025</span>
     <button class="mes-nav" id="btn-mes-sig">&#8250;</button>
   </div>
+
+  <div class="filtro-avanzado-row">
+    <button class="btn-filtro-avanzado" id="btn-abrir-filtros">
+      <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+      Filtros
+      <span class="filtro-badge" id="filtro-badge" style="display:none">1</span>
+    </button>
+    <button class="btn-filtro-limpiar" id="btn-limpiar-filtros-inline" style="display:none">Limpiar ✕</button>
+  </div>
+
+  <!-- Resumen de lo filtrado: suma automática -->
+  <div class="filtro-resumen" id="filtro-resumen" style="display:none"></div>
 
   <!-- Límite mensual -->
   <div id="limite-movimientos-wrap" style="display:none;padding:0 1rem;margin-bottom:0.75rem"></div>
@@ -166,6 +179,18 @@
         <span class="toggle-slider"></span>
       </label>
     </div>
+  </div>
+
+  <div class="ajustes-grupo">
+    <p class="ajustes-grupo-titulo">Notificaciones</p>
+    <div class="ajuste-item">
+      <label class="ajuste-label" for="cfg-notif-limite">Avisarme del límite mensual</label>
+      <label class="toggle-switch">
+        <input type="checkbox" id="cfg-notif-limite"/>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <p style="font-size:12px;color:var(--texto3);padding:0 1rem 10px;line-height:1.5" id="notif-estado-txt">Te avisamos con una notificación cuando estés cerca de tu límite mensual (80%) y cuando lo superes.</p>
   </div>
 
   <div class="ajustes-grupo">
@@ -757,7 +782,22 @@
     <div style="display:flex;flex-direction:column;gap:10px">
       <button class="btn-guardar" id="btn-tc-pagar-completo">💳 Pagar tarjeta completa</button>
       <button class="btn-guardar" id="btn-tc-abonar" style="background:var(--fondo);color:var(--texto);box-shadow:none;border:1.5px solid var(--borde)">➕ Hacer un abono</button>
+      <button class="btn-guardar" id="btn-tc-historial" style="background:var(--fondo);color:var(--texto);box-shadow:none;border:1.5px solid var(--borde)">📋 Ver movimientos de la tarjeta</button>
     </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: HISTORIAL DE TARJETA ═══════════════════ -->
+<div class="modal-overlay" id="modal-tc-historial" role="dialog" aria-modal="true">
+  <div class="modal-sheet modal-sheet-lg">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3 id="tc-hist-titulo">Movimientos</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-tc-historial')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div id="tc-hist-lista" class="tc-hist-lista"></div>
   </div>
 </div>
 
@@ -780,6 +820,49 @@
     </div>
     <p style="font-size:12px;color:var(--texto3);margin:0.5rem 0 1rem">Se descuenta de tu saldo y reduce lo que debes en la tarjeta.</p>
     <button class="btn-guardar" id="btn-confirmar-tc-abono">Confirmar abono</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ MODAL: FILTROS DE MOVIMIENTOS ═══════════════════ -->
+<div class="modal-overlay" id="modal-filtros-mov" role="dialog" aria-modal="true">
+  <div class="modal-sheet">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-header">
+      <h3>Filtrar movimientos</h3>
+      <button class="btn-cerrar-modal" onclick="UI.cerrarModal('modal-filtros-mov')" aria-label="Cerrar">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-campo">
+        <label class="campo-label" for="filtro-cat-select">Categoría</label>
+        <select class="campo-input" id="filtro-cat-select">
+          <option value="todas">Todas las categorías</option>
+        </select>
+      </div>
+
+      <div class="form-campo">
+        <label class="campo-label" for="filtro-metodo-select">Método de pago</label>
+        <select class="campo-input" id="filtro-metodo-select">
+          <option value="todos">Todos</option>
+          <option value="efectivo">💵 Efectivo</option>
+          <option value="tarjeta">💳 Tarjeta (todas)</option>
+        </select>
+      </div>
+
+      <div class="form-campo" id="filtro-tarjeta-row" style="display:none">
+        <label class="campo-label" for="filtro-tarjeta-select">¿Qué tarjeta?</label>
+        <select class="campo-input" id="filtro-tarjeta-select">
+          <option value="todas">Todas las tarjetas</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:0.5rem">
+      <button class="btn-guardar" id="btn-limpiar-filtros" style="background:var(--fondo);color:var(--texto);box-shadow:none;border:1.5px solid var(--borde);flex:1">Limpiar</button>
+      <button class="btn-guardar" id="btn-aplicar-filtros" style="flex:1">Aplicar filtros</button>
+    </div>
   </div>
 </div>
 
