@@ -71,6 +71,39 @@ const Store = {
     [this.K_TRANS,this.K_METAS,this.K_CONFIG,this.K_HIST,this.K_SAPL,this.K_RECUR,this.K_PEND,this.K_TARJETAS,this.K_LIMITE,this.K_PRESUP].forEach(k=>localStorage.removeItem(k));
   },
 
+  // ── Copia de seguridad: exportar/importar todos los datos ──
+  exportarTodo() {
+    return {
+      app: 'mis-finanzas',
+      version: 1,
+      fecha: new Date().toISOString(),
+      datos: {
+        [this.K_TRANS]:  this._r(this.K_TRANS, []),
+        [this.K_METAS]:  this._r(this.K_METAS, []),
+        [this.K_CONFIG]: this._r(this.K_CONFIG, {}),
+        [this.K_HIST]:   this._r(this.K_HIST, []),
+        [this.K_SAPL]:   this._r(this.K_SAPL, []),
+        [this.K_TARJETAS]: this._r(this.K_TARJETAS, []),
+        [this.K_LIMITE]:   this._r(this.K_LIMITE, {}),
+        [this.K_RECUR]:    this._r(this.K_RECUR, []),
+        [this.K_PRESUP]:   this._r(this.K_PRESUP, {}),
+        [this.K_PEND]:     this._r(this.K_PEND, [])
+      }
+    };
+  },
+
+  // Reemplaza todos los datos actuales con los del backup. Devuelve true/false.
+  importarTodo(backup) {
+    if(!backup || typeof backup !== 'object' || !backup.datos) return false;
+    const clavesValidas = [this.K_TRANS,this.K_METAS,this.K_CONFIG,this.K_HIST,this.K_SAPL,this.K_TARJETAS,this.K_LIMITE,this.K_RECUR,this.K_PRESUP,this.K_PEND];
+    try {
+      clavesValidas.forEach(k => {
+        if(backup.datos[k] !== undefined) this._w(k, backup.datos[k]);
+      });
+      return true;
+    } catch { return false; }
+  },
+
   // Recurrentes: [{id, descripcion, monto, categoria, dia, activo}]
   K_TARJETAS: 'mf_tarjetas_v1',
   K_LIMITE:   'mf_limite_v1',
@@ -181,6 +214,7 @@ const CATS = {
     {id:'educacion',nombre:'Educación',emoji:'📚'},
     {id:'hogar',nombre:'Hogar',emoji:'🏠'},
     {id:'metas_gasto',nombre:'Metas',emoji:'🎯'},
+    {id:'pago_tarjeta',nombre:'Pago tarjeta',emoji:'💳'},
     {id:'otros_g',nombre:'Otros',emoji:'📦'},
   ],
   ingreso: [
@@ -289,6 +323,7 @@ let anioActual = new Date().getFullYear();
 let tipoModal  = 'gasto';
 let filtroTipo = 'todas';
 let metaAbonarId = null;
+let tarjetaAccionId = null;
 
 // ══════════════════════════════════════════════
 //  UI
@@ -333,7 +368,8 @@ const UI = {
       return +m-1===mesActual&&+y===anioActual;
     });
     const ingresos=trans.filter(t=>t.tipo==='ingreso').reduce((s,t)=>s+t.monto,0);
-    const gastos  =trans.filter(t=>t.tipo==='gasto').reduce((s,t)=>s+t.monto,0);
+    // Los gastos hechos con tarjeta NO se descuentan del saldo hasta que se pagan/abonan
+    const gastos  =trans.filter(t=>t.tipo==='gasto' && !t.tarjetaId).reduce((s,t)=>s+t.monto,0);
     const saldo   =ingresos-gastos;
 
     const el=document.getElementById('saldo-principal');
@@ -365,7 +401,7 @@ const UI = {
     const claveMes = `${anio}-${String(mes+1).padStart(2,'0')}`;
 
     const pendientes = Store.getPendientes().filter(p =>
-      p.claveMes === claveMes && !p.pagado
+      p.claveMes === claveMes && !p.pagado && !p.oculto
     );
 
     // También incluir transacciones con prioridad no pagadas
@@ -389,7 +425,10 @@ const UI = {
           <p class="alerta-desc">${Seguridad.limpiar(p.descripcion)}</p>
           <p class="alerta-sub">${urgente?'⚠️ Vence pronto':'Pendiente'} · ${Fmt.monto(p.monto)}</p>
         </div>
-        <button class="alerta-pagar-btn" data-pend-id="${p.id}">Pagar</button>
+        <div class="alerta-acciones">
+          <button class="alerta-pagar-btn" data-pend-id="${p.id}">Pagar</button>
+          <button class="alerta-del-btn" data-pend-del-id="${p.id}" aria-label="Eliminar pendiente">✕</button>
+        </div>
       </div>`;
     }).join('');
 
@@ -401,7 +440,10 @@ const UI = {
           <p class="alerta-desc">${Seguridad.limpiar(t.descripcion)}</p>
           <p class="alerta-sub">Prioridad · ${Fmt.monto(t.monto)}</p>
         </div>
-        <button class="alerta-pagar-btn" data-trans-id="${t.id}">✓</button>
+        <div class="alerta-acciones">
+          <button class="alerta-pagar-btn" data-trans-id="${t.id}">✓</button>
+          <button class="alerta-del-btn" data-trans-del-id="${t.id}" aria-label="Eliminar pendiente">✕</button>
+        </div>
       </div>`;
     }).join('');
 
@@ -442,6 +484,29 @@ const UI = {
         Store.setTrans(todas);
         App.renderActual();
         this.toast('✓ Marcado como pagado');
+      });
+    });
+    contenedor.querySelectorAll('[data-pend-del-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if(!confirm('¿Eliminar este pendiente? Esta acción no se puede deshacer.')) return;
+        // Se marca como "oculto" en vez de borrarlo del array: si viene de un
+        // servicio recurrente, borrarlo del todo hacía que se regenerara solo
+        // en el siguiente render (generarPendientesMes lo volvía a crear).
+        // Marcándolo oculto, este mes ya no vuelve a aparecer, pero el próximo
+        // mes se genera con normalidad.
+        Store.setPendientes(Store.getPendientes().map(p =>
+          p.id === btn.dataset.pendDelId ? {...p, oculto:true} : p
+        ));
+        App.renderActual();
+        this.toast('🗑️ Pendiente eliminado');
+      });
+    });
+    contenedor.querySelectorAll('[data-trans-del-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if(!confirm('¿Eliminar este pendiente? Esta acción no se puede deshacer.')) return;
+        Store.delTrans(btn.dataset.transDelId);
+        App.renderActual();
+        this.toast('🗑️ Pendiente eliminado');
       });
     });
   },
@@ -584,6 +649,14 @@ const UI = {
   TC_COLORES: ['#1a1a2e','#2563eb','#7c3aed','#db2777','#16a34a','#ea580c','#0d9488','#dc2626','#1e40af','#374151'],
   _tcColorSeleccionado: '#1a1a2e',
 
+  // Deuda actual de una tarjeta = total cargado - total pagado/abonado (histórico, no se resetea cada mes)
+  _deudaTarjeta(tcId) {
+    const trans = Store.getTrans();
+    const cargos = trans.filter(t=>t.tipo==='gasto' && t.tarjetaId===tcId).reduce((s,t)=>s+t.monto,0);
+    const pagos  = trans.filter(t=>t.tipo==='gasto' && t.tarjetaPagoId===tcId).reduce((s,t)=>s+t.monto,0);
+    return Math.max(0, Math.round((cargos-pagos)*100)/100);
+  },
+
   renderTarjetas() {
     const el = document.getElementById('lista-tarjetas');
     const tarjetas = Store.getTarjetas();
@@ -591,12 +664,11 @@ const UI = {
       el.innerHTML=`<div class="estado-vacio"><div class="estado-vacio-ico">💳</div><p>Sin tarjetas configuradas</p><p>Toca <strong>+</strong> para agregar una</p></div>`;
       return;
     }
-    const hoy=new Date(), mes=hoy.getMonth(), anio=hoy.getFullYear();
 
     // Limpiar contenedor y crear tarjetas como elementos DOM reales
     el.innerHTML = '';
     tarjetas.forEach(tc => {
-      const usado = Store.getTrans().filter(t=>{ const[y,m]=t.fecha.split('-'); return t.tipo==='gasto'&&t.tarjetaId===tc.id&&+m-1===mes&&+y===anio; }).reduce((s,t)=>s+t.monto,0);
+      const usado = this._deudaTarjeta(tc.id);
       const pct  = tc.limite ? Math.min(100,Math.round((usado/tc.limite)*100)) : 0;
       const disp = tc.limite ? Math.max(0,tc.limite-usado) : null;
       let estadoClass='tc-estado-ok', estadoTxt='OK';
@@ -606,6 +678,7 @@ const UI = {
       const card = document.createElement('div');
       card.className = 'card-tc';
       card.style.background = `linear-gradient(135deg,${tc.color},${tc.color}cc)`;
+      card.style.cursor = 'pointer';
       card.innerHTML = `
         <div class="tc-header">
           <div>
@@ -616,7 +689,7 @@ const UI = {
         </div>
         <div class="tc-limite-info">
           <p class="tc-usado">${Fmt.monto(usado)}</p>
-          <p class="tc-de">${tc.limite?`de ${Fmt.monto(tc.limite)} · Disponible: ${Fmt.monto(disp)}`:'Sin límite configurado'}</p>
+          <p class="tc-de">${tc.limite?`de ${Fmt.monto(tc.limite)} · Disponible: ${Fmt.monto(disp)}`:'Sin límite configurado'} · <span style="opacity:.85">debes ${Fmt.monto(usado)}</span></p>
         </div>
         ${tc.limite?`<div class="tc-barra-bg"><div class="tc-barra-fill" style="width:${pct}%"></div></div>`:''}
         <div class="tc-footer">
@@ -628,11 +701,78 @@ const UI = {
         </div>`;
 
       // Listeners directos en el elemento DOM — no en HTML string
-      card.querySelector('.btn-editar-tc').addEventListener('click', () => this._editarTarjeta(tc.id));
-      card.querySelector('.btn-eliminar-tc').addEventListener('click', () => this._confirmarEliminarTarjeta(tc.id));
+      card.querySelector('.btn-editar-tc').addEventListener('click', (e) => { e.stopPropagation(); this._editarTarjeta(tc.id); });
+      card.querySelector('.btn-eliminar-tc').addEventListener('click', (e) => { e.stopPropagation(); this._confirmarEliminarTarjeta(tc.id); });
+      // Tocar la tarjeta (fuera de los botones) → abrir acciones de pago
+      card.addEventListener('click', () => this.abrirAccionesTarjeta(tc.id));
 
       el.appendChild(card);
     });
+  },
+
+  // ── Acciones de pago de tarjeta: Pagar completo / Abonar ──
+  abrirAccionesTarjeta(id) {
+    const tc = Store.getTarjetas().find(t=>t.id===id);
+    if(!tc) return;
+    tarjetaAccionId = id;
+    const deuda = this._deudaTarjeta(id);
+    document.getElementById('tc-acciones-titulo').textContent = Seguridad.limpiar(tc.nombre);
+    document.getElementById('tc-acciones-deuda').textContent = `Debes: ${Fmt.monto(deuda)}`;
+    const btnPagar = document.getElementById('btn-tc-pagar-completo');
+    const btnAbonar = document.getElementById('btn-tc-abonar');
+    if(btnPagar) btnPagar.disabled = deuda<=0;
+    if(btnAbonar) btnAbonar.disabled = deuda<=0;
+    if(deuda<=0) {
+      document.getElementById('tc-acciones-deuda').textContent = 'Sin deuda pendiente en esta tarjeta ✓';
+    }
+    this._abrirModal('modal-tc-acciones');
+  },
+
+  pagarTarjetaCompleto() {
+    const tc = Store.getTarjetas().find(t=>t.id===tarjetaAccionId);
+    if(!tc) return;
+    const deuda = this._deudaTarjeta(tarjetaAccionId);
+    if(deuda<=0){ this.toast('✓ No tienes deuda pendiente en esta tarjeta'); return; }
+    this.cerrarModal('modal-tc-acciones');
+    Store.addTrans({
+      id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+      tipo:'gasto', descripcion:`Pago tarjeta: ${Seguridad.limpiar(tc.nombre)}`,
+      monto:deuda, categoria:'pago_tarjeta', fecha:new Date().toISOString().slice(0,10),
+      nota:'Pago completo de tarjeta', tarjetaId:'', tarjetaPagoId:tarjetaAccionId, pagado:true
+    });
+    App.renderActual();
+    this.toast(`✓ Pagaste ${Fmt.monto(deuda)} de ${Seguridad.limpiar(tc.nombre)}`);
+  },
+
+  abrirModalAbonarTarjeta() {
+    const tc = Store.getTarjetas().find(t=>t.id===tarjetaAccionId);
+    if(!tc) return;
+    const deuda = this._deudaTarjeta(tarjetaAccionId);
+    if(deuda<=0){ this.toast('✓ No tienes deuda pendiente en esta tarjeta'); return; }
+    this.cerrarModal('modal-tc-acciones');
+    document.getElementById('tc-abono-titulo').textContent = `Abonar a: ${Seguridad.limpiar(tc.nombre)}`;
+    document.getElementById('tc-abono-deuda').textContent = `Deuda actual: ${Fmt.monto(deuda)}`;
+    document.getElementById('tc-abono-monto').value='';
+    this._abrirModal('modal-tc-abono');
+    setTimeout(()=>document.getElementById('tc-abono-monto').focus(),350);
+  },
+
+  confirmarAbonoTarjeta() {
+    const tc = Store.getTarjetas().find(t=>t.id===tarjetaAccionId);
+    if(!tc) return;
+    const monto = Seguridad.limpiarNumero(document.getElementById('tc-abono-monto').value);
+    if(!monto){ this.toast('⚠️ Monto inválido'); return; }
+    const deuda = this._deudaTarjeta(tarjetaAccionId);
+    const montoFinal = deuda>0 ? Math.min(monto, deuda) : monto;
+    Store.addTrans({
+      id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+      tipo:'gasto', descripcion:`Abono a tarjeta: ${Seguridad.limpiar(tc.nombre)}`,
+      monto:montoFinal, categoria:'pago_tarjeta', fecha:new Date().toISOString().slice(0,10),
+      nota:'Abono a tarjeta', tarjetaId:'', tarjetaPagoId:tarjetaAccionId, pagado:true
+    });
+    this.cerrarModal('modal-tc-abono');
+    App.renderActual();
+    this.toast(`✓ Abonaste ${Fmt.monto(montoFinal)} a ${Seguridad.limpiar(tc.nombre)}`);
   },
 
   _editarTarjeta(id) {
@@ -1150,11 +1290,7 @@ const UI = {
     if(tarjetaId && tipoModal==='gasto' && !esPendiente) {
       const tc = Store.getTarjetas().find(t=>t.id===tarjetaId);
       if(tc && tc.limite>0) {
-        const hoy2=new Date(),mes2=hoy2.getMonth(),anio2=hoy2.getFullYear();
-        const usadoTC = Store.getTrans().filter(t=>{
-          const[y,m]=t.fecha.split('-');
-          return t.tipo==='gasto'&&t.tarjetaId===tarjetaId&&+m-1===mes2&&+y===anio2;
-        }).reduce((s,t)=>s+t.monto,0);
+        const usadoTC = this._deudaTarjeta(tarjetaId);
         const nuevoUsado = usadoTC + monto;
         if(nuevoUsado > tc.limite) {
           // Mostrar advertencia de límite de tarjeta
@@ -1427,6 +1563,43 @@ const UI = {
     Store.borrarTodo();
     App.renderActual();
     this.toast('Datos borrados');
+  },
+
+  // ── Copia de seguridad ────────────────────────
+  descargarBackup() {
+    const backup = Store.exportarTodo();
+    const json = JSON.stringify(backup, null, 2);
+    const blob = new Blob([json], {type:'application/json'});
+    const url  = URL.createObjectURL(blob);
+    const fecha = new Date().toISOString().slice(0,10);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mis-finanzas-backup-${fecha}.json`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(url), 3000);
+    this.toast('📥 Copia de seguridad descargada');
+  },
+
+  restaurarBackup(file) {
+    if(!file) return;
+    if(!confirm('⚠️ Esto reemplazará todos tus datos actuales con los del archivo. ¿Continuar?')) return;
+    const lector = new FileReader();
+    lector.onload = () => {
+      try {
+        const backup = JSON.parse(lector.result);
+        if(!Store.importarTodo(backup)) {
+          this.toast('❌ El archivo no es una copia de seguridad válida');
+          return;
+        }
+        this.toast('✓ Datos restaurados');
+        const cfg = Store.getConfig();
+        App.aplicarTema(cfg);
+        App.renderActual();
+      } catch {
+        this.toast('❌ No se pudo leer el archivo');
+      }
+    };
+    lector.readAsText(file);
   },
 
   // ── Menú Más ──────────────────────────────────
@@ -1879,6 +2052,12 @@ const App = {
     document.getElementById('btn-confirmar-abono')?.addEventListener('click',()=>UI.confirmarAbono());
     document.getElementById('btn-confirmar-editar-salario')?.addEventListener('click',()=>UI.guardarEdicionSalario());
 
+    // Acciones de pago de tarjeta
+    document.getElementById('btn-tc-pagar-completo')?.addEventListener('click',()=>UI.pagarTarjetaCompleto());
+    document.getElementById('btn-tc-abonar')?.addEventListener('click',()=>UI.abrirModalAbonarTarjeta());
+    document.getElementById('btn-confirmar-tc-abono')?.addEventListener('click',()=>UI.confirmarAbonoTarjeta());
+    document.getElementById('tc-abono-monto')?.addEventListener('keydown',e=>{ if(e.key==='Enter') UI.confirmarAbonoTarjeta(); });
+
     // Tabs gráfica
     document.querySelectorAll('.grafica-tab').forEach(btn=>{
       btn.addEventListener('click',()=>{
@@ -1915,8 +2094,27 @@ const App = {
     document.getElementById('p-nombre')?.addEventListener('change',()=>UI.guardarPerfil());
     document.getElementById('cfg-oscuro')?.addEventListener('change',()=>UI.guardarPerfil());
 
-    // SW
-    if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+    // Copia de seguridad — restaurar
+    document.getElementById('input-restaurar-backup')?.addEventListener('change', e => {
+      const file = e.target.files?.[0];
+      UI.restaurarBackup(file);
+      e.target.value = ''; // permitir elegir el mismo archivo otra vez
+    });
+
+    // SW — se registra con un query de versión para evitar que el navegador
+    // sirva una copia vieja de sw.js desde su caché HTTP, y se recarga la
+    // página automáticamente en cuanto la versión nueva toma el control.
+    if('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js?v=6', {updateViaCache:'none'})
+        .then(reg => reg.update())
+        .catch(()=>{});
+      let swRefrescando = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if(swRefrescando) return;
+        swRefrescando = true;
+        window.location.reload();
+      });
+    }
 
     this.irA('inicio');
   }
