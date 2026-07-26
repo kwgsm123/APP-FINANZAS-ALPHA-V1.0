@@ -1221,6 +1221,29 @@ body.oscuro .opcion-radio:has(input:checked) strong {
 }
 .alerta-pagar-btn:hover { background: var(--acento-dark); }
 
+.alerta-acciones { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+.alerta-del-btn {
+  background: var(--gasto-bg);
+  color: var(--gasto);
+  border: none;
+  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--trans);
+}
+.alerta-del-btn:hover { background: rgba(220,38,38,0.25); }
+
+.btn-guardar:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* Panel prioridad — controlado desde JS, no forzar display aquí */
 
 /* ══════════════════════════════════════════
