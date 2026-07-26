@@ -1,4 +1,4 @@
-const CACHE = 'mis-finanzas-v3';
+const CACHE = 'mis-finanzas-v6';
 const BASE = '/APP-FINANZAS-ALPHA-V1.0/';
 const ARCHIVOS = [
   BASE,
@@ -22,6 +22,23 @@ self.addEventListener('activate', e => {
   self.clients.claim();
 });
 
+// Network-first para el "app shell" (html/css/js) — así las actualizaciones
+// se ven de inmediato en vez de quedar atrapadas en la caché vieja.
+// Cache-first solo para íconos (no cambian casi nunca).
 self.addEventListener('fetch', e => {
-  e.respondWith(caches.match(e.request).then(cached => cached || fetch(e.request)));
+  const esAppShell = /\.(html|js|css)$/.test(e.request.url) || e.request.mode === 'navigate';
+
+  if (esAppShell) {
+    e.respondWith(
+      fetch(e.request)
+        .then(res => {
+          const copia = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, copia));
+          return res;
+        })
+        .catch(() => caches.match(e.request))
+    );
+  } else {
+    e.respondWith(caches.match(e.request).then(cached => cached || fetch(e.request)));
+  }
 });
