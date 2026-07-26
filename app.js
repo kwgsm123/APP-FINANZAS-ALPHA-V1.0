@@ -107,6 +107,7 @@ const Store = {
   // Recurrentes: [{id, descripcion, monto, categoria, dia, activo}]
   K_TARJETAS: 'mf_tarjetas_v1',
   K_LIMITE:   'mf_limite_v1',
+  K_NOTIF_FLAGS: 'mf_notif_flags_v1',
   K_RECUR: 'mf_recurrentes_v1',
   K_PRESUP: 'mf_presupuesto_v1',
   getTarjetas()   { return this._r(this.K_TARJETAS, []); },
@@ -155,7 +156,8 @@ const Store = {
           categoria: r.categoria,
           fechaVence: `${anio}-${String(mes+1).padStart(2,'0')}-${String(dia).padStart(2,'0')}`,
           pagado: false,
-          prioridad: r.prioridad || false
+          prioridad: r.prioridad || false,
+          tarjetaId: r.tarjetaId || ''
         });
       }
     });
@@ -322,6 +324,9 @@ let chartInstancia = null; // instancia global de Chart.js
 let anioActual = new Date().getFullYear();
 let tipoModal  = 'gasto';
 let filtroTipo = 'todas';
+let filtroCategoria = 'todas';
+let filtroMetodo = 'todos';
+let filtroTarjetaId = 'todas';
 let metaAbonarId = null;
 let tarjetaAccionId = null;
 
@@ -379,6 +384,8 @@ const UI = {
     const card=document.getElementById('card-saldo-el');
     if(card) card.style.background = saldo<0 ? 'linear-gradient(135deg,#dc2626,#b91c1c)' : '';
 
+    this._renderGraficaSaldo(saldo);
+
     document.getElementById('mini-ingresos').textContent=Fmt.monto(ingresos);
     document.getElementById('mini-gastos').textContent  =Fmt.monto(gastos);
 
@@ -390,6 +397,60 @@ const UI = {
     this._renderPendientesAlerta();
     this._renderChips(trans);
     this._renderRecientes(trans);
+  },
+
+  // Gráfico tipo "trading" del saldo disponible: cada transacción de
+  // efectivo del mes genera un punto nuevo (no cada día), así se nota el
+  // cambio de inmediato al agregar un movimiento. Se pone rojo si el saldo
+  // termina agotado/negativo.
+  _renderGraficaSaldo(saldoActual) {
+    const cont = document.getElementById('card-saldo-chart');
+    if(!cont) return;
+    const hoy = new Date(), anio=hoy.getFullYear(), mes=hoy.getMonth();
+
+    const trans = Store.getTrans()
+      .filter(t=>{ const[y,m]=t.fecha.split('-'); return +y===anio && +m-1===mes && !(t.tipo==='gasto' && t.tarjetaId); })
+      .sort((a,b)=> a.fecha===b.fecha ? String(a.id).localeCompare(String(b.id)) : a.fecha.localeCompare(b.fecha));
+
+    if(!trans.length) { cont.innerHTML=''; return; }
+
+    let acumulado = 0;
+    const puntos = [0]; // arranca en 0 al inicio del mes
+    trans.forEach(t=>{ acumulado += (t.tipo==='ingreso' ? t.monto : -t.monto); puntos.push(acumulado); });
+
+    const w=300, h=56, pad=3;
+    let min=Math.min(...puntos), max=Math.max(...puntos);
+    if(min===max) { min-=1; max+=1; } // evita división entre 0 si nunca ha variado
+    const rango=max-min;
+    const stepX=(w-pad*2)/(puntos.length-1);
+    const coords=puntos.map((v,i)=>[
+      pad+i*stepX,
+      h-pad-((v-min)/rango)*(h-pad*2)
+    ]);
+
+    const negativo = saldoActual < 0;
+    const colorLinea = negativo ? '#fecaca' : '#ffffff';
+    const colorGlow  = negativo ? '#ef4444' : '#4ade80';
+
+    const linePath = coords.map((p,i)=>(i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+    const areaPath = linePath+` L${coords[coords.length-1][0].toFixed(1)},${h} L${coords[0][0].toFixed(1)},${h} Z`;
+    const ultimo = coords[coords.length-1];
+
+    cont.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="gradSaldo" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${colorGlow}" stop-opacity="0.5"/>
+          <stop offset="100%" stop-color="${colorGlow}" stop-opacity="0"/>
+        </linearGradient>
+        <filter id="glowSaldo" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="2" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <path d="${areaPath}" fill="url(#gradSaldo)" stroke="none"/>
+      <path d="${linePath}" fill="none" stroke="${colorLinea}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" filter="url(#glowSaldo)"/>
+      <circle cx="${ultimo[0].toFixed(1)}" cy="${ultimo[1].toFixed(1)}" r="3" fill="${colorLinea}" filter="url(#glowSaldo)"/>
+    </svg>`;
   },
 
   _renderPendientesAlerta() {
@@ -419,11 +480,12 @@ const UI = {
       const vence = new Date(p.fechaVence+'T00:00:00');
       const diasFaltan = Math.ceil((vence-hoy)/(1000*60*60*24));
       const urgente = diasFaltan <= 3;
+      const tc = p.tarjetaId ? Store.getTarjetas().find(t=>t.id===p.tarjetaId) : null;
       return `<div class="alerta-item ${urgente?'alerta-urgente':''}">
         <div class="alerta-ico">${cat.emoji}</div>
         <div class="alerta-info">
           <p class="alerta-desc">${Seguridad.limpiar(p.descripcion)}</p>
-          <p class="alerta-sub">${urgente?'⚠️ Vence pronto':'Pendiente'} · ${Fmt.monto(p.monto)}</p>
+          <p class="alerta-sub">${urgente?'⚠️ Vence pronto':'Pendiente'} · ${Fmt.monto(p.monto)}${tc?` · 💳 ${Seguridad.limpiar(tc.nombre)}`:''}</p>
         </div>
         <div class="alerta-acciones">
           <button class="alerta-pagar-btn" data-pend-id="${p.id}">Pagar</button>
@@ -465,15 +527,19 @@ const UI = {
         Store.setPendientes(Store.getPendientes().map(p =>
           p.id === pendId ? {...p, pagado:true} : p
         ));
-        // Crear transacción real
+        // Crear transacción real — si el pendiente se creó con tarjeta,
+        // se registra como cargo a esa tarjeta (no descuenta efectivo);
+        // si no, se descuenta del saldo/efectivo como antes.
         Store.addTrans({
           id: Date.now().toString(36)+Math.random().toString(36).slice(2,5),
           tipo:'gasto', descripcion:pend.descripcion, monto:pend.monto,
           categoria:pend.categoria, fecha:new Date().toISOString().slice(0,10),
-          nota:'Pago de pendiente', pagado:true, prioridad:false
+          nota:'Pago de pendiente', pagado:true, prioridad:false,
+          tarjetaId: pend.tarjetaId || ''
         });
         App.renderActual();
-        this.toast('✓ Marcado como pagado');
+        const tc = pend.tarjetaId ? Store.getTarjetas().find(t=>t.id===pend.tarjetaId) : null;
+        this.toast(tc ? `✓ Cargado a ${tc.nombre}` : '✓ Marcado como pagado');
       });
     });
     contenedor.querySelectorAll('[data-trans-id]').forEach(btn => {
@@ -775,6 +841,36 @@ const UI = {
     this.toast(`✓ Abonaste ${Fmt.monto(montoFinal)} a ${Seguridad.limpiar(tc.nombre)}`);
   },
 
+  // Historial de movimientos de una tarjeta — como revisar el estado de
+  // cuenta en la app del banco: todas las compras (cargos) y todos los
+  // pagos/abonos hechos a esa tarjeta, sin importar si ya se pagaron o no.
+  verHistorialTarjeta() {
+    const tc = Store.getTarjetas().find(t=>t.id===tarjetaAccionId);
+    if(!tc) return;
+    this.cerrarModal('modal-tc-acciones');
+    const todas = Store.getTrans();
+    const cargos = todas.filter(t=>t.tipo==='gasto' && t.tarjetaId===tc.id).sort((a,b)=>b.fecha.localeCompare(a.fecha));
+    const pagos  = todas.filter(t=>t.tipo==='gasto' && t.tarjetaPagoId===tc.id).sort((a,b)=>b.fecha.localeCompare(a.fecha));
+
+    document.getElementById('tc-hist-titulo').textContent = `📋 ${Seguridad.limpiar(tc.nombre)}`;
+    const el = document.getElementById('tc-hist-lista');
+    if(!cargos.length && !pagos.length) {
+      el.innerHTML = `<div class="estado-vacio"><div class="estado-vacio-ico">💳</div><p>Sin movimientos todavía</p></div>`;
+    } else {
+      const fila = t => `<div class="tc-hist-item">
+        <div class="tc-hist-info">
+          <p class="tc-hist-desc">${Seguridad.limpiar(t.descripcion)}</p>
+          <p class="tc-hist-fecha">${Fmt.fechaCorta(t.fecha)}</p>
+        </div>
+        <span class="tc-hist-monto ${t.tarjetaPagoId?'pago':'gasto'}">${t.tarjetaPagoId?'+':'-'}${Fmt.monto(t.monto)}</span>
+      </div>`;
+      el.innerHTML =
+        (cargos.length?`<p class="tc-hist-grupo-titulo">Compras / cargos (${cargos.length})</p>${cargos.map(fila).join('')}`:'') +
+        (pagos.length?`<p class="tc-hist-grupo-titulo">Pagos / abonos (${pagos.length})</p>${pagos.map(fila).join('')}`:'');
+    }
+    this._abrirModal('modal-tc-historial');
+  },
+
   _editarTarjeta(id) {
     const tc = Store.getTarjetas().find(t=>t.id===id);
     if(tc) this.abrirModalTarjeta(tc);
@@ -849,8 +945,37 @@ const UI = {
     if(ed)ed.textContent=`de ${Fmt.monto(lim.monto)}`;
     if(ef){ef.style.width=`${pct}%`;ef.style.background=color;}
     if(ee){ee.style.color=color;ee.textContent=excedido?`⚠️ Excedido en ${Fmt.monto(totalGastado-lim.monto)}`:pct>=80?`Cuidado: ${pct}% del límite usado`:`${Fmt.monto(disponible)} disponible (${100-pct}%)`;}
+    // Notificación del sistema (si está activada) al cruzar 80% o al exceder
+    this._chequearNotifLimite(excedido, pct, totalGastado, lim.monto, mes, anio);
     // Banner en inicio si excedido o cerca
     this._renderBannerLimiteInicio(excedido||pct>=80, excedido, pct, totalGastado, lim.monto);
+  },
+
+  // Envía una notificación del sistema una sola vez por umbral y por mes,
+  // para no estar repitiendo el aviso cada vez que se abre la app.
+  _chequearNotifLimite(excedido, pct, gastado, limite, mes, anio) {
+    const cfg = Store.getConfig();
+    if(!cfg.notifLimite) return;
+    if(!('Notification' in window) || Notification.permission!=='granted') return;
+    if(pct<80 && !excedido) return;
+    const claveMes = `${anio}-${String(mes+1).padStart(2,'0')}`;
+    const flags = Store._r(Store.K_NOTIF_FLAGS, {});
+    flags[claveMes] = flags[claveMes] || {};
+    if(excedido && !flags[claveMes].excedido) {
+      new Notification('🚨 Límite mensual excedido', {
+        body:`Gastaste ${Fmt.monto(gastado)} de tu límite de ${Fmt.monto(limite)} (te pasaste por ${Fmt.monto(gastado-limite)}).`,
+        tag:'mf-limite', icon:'icons/icon-192.png'
+      });
+      flags[claveMes].excedido = true; flags[claveMes].cerca = true;
+      Store._w(Store.K_NOTIF_FLAGS, flags);
+    } else if(!excedido && pct>=80 && !flags[claveMes].cerca) {
+      new Notification('⚠️ Cerca de tu límite mensual', {
+        body:`Ya usaste el ${pct}% de tu límite (${Fmt.monto(gastado)} de ${Fmt.monto(limite)}).`,
+        tag:'mf-limite', icon:'icons/icon-192.png'
+      });
+      flags[claveMes].cerca = true;
+      Store._w(Store.K_NOTIF_FLAGS, flags);
+    }
   },
 
   _renderBannerLimiteInicio(mostrar, excedido, pct, gastado, limite) {
@@ -958,12 +1083,100 @@ const UI = {
     } else {callback();}
   },
 
+  // ── Filtros avanzados de Movimientos ───────────
+  abrirModalFiltros() {
+    const selCat = document.getElementById('filtro-cat-select');
+    const selMetodo = document.getElementById('filtro-metodo-select');
+    const selTc = document.getElementById('filtro-tarjeta-select');
+    if(!selCat||!selMetodo||!selTc) return;
+
+    // Poblar categorías (gasto + ingreso, sin duplicados)
+    const todasCats = [...CATS.gasto, ...CATS.ingreso].filter((c,i,arr)=>arr.findIndex(x=>x.id===c.id)===i);
+    selCat.innerHTML = `<option value="todas">Todas las categorías</option>` +
+      todasCats.map(c=>`<option value="${c.id}">${c.emoji} ${Seguridad.limpiar(c.nombre)}</option>`).join('');
+    selCat.value = filtroCategoria;
+
+    // Poblar tarjetas
+    const tarjetas = Store.getTarjetas();
+    selTc.innerHTML = `<option value="todas">Todas las tarjetas</option>` +
+      tarjetas.map(t=>`<option value="${t.id}">💳 ${Seguridad.limpiar(t.nombre)}</option>`).join('');
+    selTc.value = filtroTarjetaId;
+
+    selMetodo.value = filtroMetodo;
+    document.getElementById('filtro-tarjeta-row').style.display = filtroMetodo==='tarjeta' ? 'block' : 'none';
+
+    this._abrirModal('modal-filtros-mov');
+  },
+
+  _toggleFiltroTarjetaRow() {
+    const metodo = document.getElementById('filtro-metodo-select')?.value;
+    const row = document.getElementById('filtro-tarjeta-row');
+    if(row) row.style.display = metodo==='tarjeta' ? 'block' : 'none';
+  },
+
+  aplicarFiltrosMov() {
+    filtroCategoria = document.getElementById('filtro-cat-select')?.value || 'todas';
+    filtroMetodo = document.getElementById('filtro-metodo-select')?.value || 'todos';
+    filtroTarjetaId = filtroMetodo==='tarjeta' ? (document.getElementById('filtro-tarjeta-select')?.value || 'todas') : 'todas';
+    this.cerrarModal('modal-filtros-mov');
+    this.renderTransacciones();
+  },
+
+  limpiarFiltrosMov() {
+    filtroCategoria = 'todas'; filtroMetodo = 'todos'; filtroTarjetaId = 'todas';
+    this.cerrarModal('modal-filtros-mov');
+    this.renderTransacciones();
+  },
+
+  _hayFiltrosActivos() {
+    return filtroCategoria!=='todas' || filtroMetodo!=='todos';
+  },
+
+  _actualizarBadgeFiltros() {
+    const btn = document.getElementById('btn-abrir-filtros');
+    const badge = document.getElementById('filtro-badge');
+    const btnLimpiar = document.getElementById('btn-limpiar-filtros-inline');
+    const activos = this._hayFiltrosActivos();
+    let n = 0;
+    if(filtroCategoria!=='todas') n++;
+    if(filtroMetodo!=='todos') n++;
+    if(btn) btn.classList.toggle('filtro-activo', activos);
+    if(badge) { badge.style.display = activos ? 'flex' : 'none'; badge.textContent = n; }
+    if(btnLimpiar) btnLimpiar.style.display = activos ? 'inline-flex' : 'none';
+  },
+
   // ── Transacciones ─────────────────────────────
   renderTransacciones() {
     document.getElementById('mes-label').textContent=Fmt.nombreMes(mesActual,anioActual);
     let trans=Store.getTrans().filter(t=>{ const[y,m]=t.fecha.split('-'); return +m-1===mesActual&&+y===anioActual; });
     if(filtroTipo!=='todas') trans=trans.filter(t=>t.tipo===filtroTipo);
+    if(filtroCategoria!=='todas') trans=trans.filter(t=>t.categoria===filtroCategoria);
+    if(filtroMetodo==='efectivo') trans=trans.filter(t=>!t.tarjetaId);
+    else if(filtroMetodo==='tarjeta') {
+      trans=trans.filter(t=>t.tarjetaId);
+      if(filtroTarjetaId!=='todas') trans=trans.filter(t=>t.tarjetaId===filtroTarjetaId);
+    }
     trans.sort((a,b)=>b.fecha.localeCompare(a.fecha));
+
+    this._actualizarBadgeFiltros();
+
+    // Resumen automático de lo filtrado
+    const resumenEl = document.getElementById('filtro-resumen');
+    if(resumenEl) {
+      if(this._hayFiltrosActivos()) {
+        const sumGasto = trans.filter(t=>t.tipo==='gasto').reduce((s,t)=>s+t.monto,0);
+        const sumIngreso = trans.filter(t=>t.tipo==='ingreso').reduce((s,t)=>s+t.monto,0);
+        let partes = '';
+        if(filtroTipo!=='ingreso') partes += `<div class="filtro-resumen-item"><span class="filtro-resumen-label">Gastado</span><span class="filtro-resumen-valor gas">${Fmt.monto(sumGasto)}</span></div>`;
+        if(filtroTipo!=='gasto') partes += `<div class="filtro-resumen-item"><span class="filtro-resumen-label">Ingresado</span><span class="filtro-resumen-valor ing">${Fmt.monto(sumIngreso)}</span></div>`;
+        partes += `<div class="filtro-resumen-item"><span class="filtro-resumen-label">Movimientos</span><span class="filtro-resumen-valor">${trans.length}</span></div>`;
+        resumenEl.innerHTML = partes;
+        resumenEl.style.display = 'flex';
+      } else {
+        resumenEl.style.display = 'none';
+      }
+    }
+
     // Límite mensual en Movimientos
     this._renderLimiteMensualEnMovimientos();
 
@@ -1037,7 +1250,22 @@ const UI = {
     if(pNombre) pNombre.value=nombre;
     const pOscuro=document.getElementById('cfg-oscuro');
     if(pOscuro) pOscuro.checked=!!cfg.oscuro;
+    const pNotif=document.getElementById('cfg-notif-limite');
+    if(pNotif) pNotif.checked=!!cfg.notifLimite;
+    this._actualizarTextoNotif();
     this.renderTemasGrid(cfg.tema||'verde');
+  },
+
+  _actualizarTextoNotif() {
+    const txt = document.getElementById('notif-estado-txt');
+    if(!txt) return;
+    if(!('Notification' in window)) {
+      txt.textContent = 'Tu navegador no soporta notificaciones.';
+    } else if(Notification.permission==='denied') {
+      txt.textContent = '🚫 Bloqueaste las notificaciones para este sitio. Actívalas desde los ajustes del navegador para usar esta opción.';
+    } else {
+      txt.textContent = 'Te avisamos con una notificación cuando estés cerca de tu límite mensual (80%) y cuando lo superes.';
+    }
   },
 
   renderTemasGrid(temaActual) {
@@ -1244,8 +1472,9 @@ const UI = {
     if(cat==='servicios'&&tipoModal==='gasto') {
       const esRecurrente=document.getElementById('t-es-recurrente')?.checked||false;
       const diaRec=Math.min(28,Math.max(1,parseInt(document.getElementById('t-dia-recurrente')?.value)||1));
+      const tarjetaIdServicio = document.getElementById('t-tarjeta')?.value || '';
       // Guardar datos temporalmente y abrir modal de confirmación
-      this._datosPendientesServicio={desc,monto,cat,fecha,nota,esRecurrente,diaRec};
+      this._datosPendientesServicio={desc,monto,cat,fecha,nota,esRecurrente,diaRec,tarjetaId:tarjetaIdServicio};
       this.cerrarModal('modal-trans');
       this._abrirModal('modal-servicio-pago');
       document.getElementById('servicio-pago-nombre').textContent=desc;
@@ -1272,7 +1501,8 @@ const UI = {
       pends.push({
         id:'pend_manual_'+Date.now().toString(36),
         claveMes, descripcion:desc, monto, categoria:cat,
-        fechaVence:fecha, pagado:false, prioridad:true, recurrenteId:null
+        fechaVence:fecha, pagado:false, prioridad:true, recurrenteId:null,
+        tarjetaId: tarjetaId||''
       });
       Store.setPendientes(pends);
       this.cerrarModal('modal-trans');
@@ -1318,7 +1548,7 @@ const UI = {
       const hoy2=new Date(),mes2=hoy2.getMonth(),anio2=hoy2.getFullYear();
       const claveMes=`${anio2}-${String(mes2+1).padStart(2,'0')}`;
       const pends=Store.getPendientes();
-      pends.push({id:'pend_manual_'+Date.now().toString(36),claveMes,descripcion:desc,monto,categoria:cat,fechaVence:fecha,pagado:false,prioridad:true,recurrenteId:null});
+      pends.push({id:'pend_manual_'+Date.now().toString(36),claveMes,descripcion:desc,monto,categoria:cat,fechaVence:fecha,pagado:false,prioridad:true,recurrenteId:null,tarjetaId:tarjetaId||''});
       Store.setPendientes(pends);
       this.cerrarModal('modal-trans');
       App.renderActual();
@@ -1369,7 +1599,7 @@ const UI = {
         return p;
       });
       Store.setPendientes(pends);
-      this._registrarTransaccionFinal({desc:d.desc,monto:d.monto,cat:d.cat,fecha:d.fecha,nota:'Pago automático',pagado:true});
+      this._registrarTransaccionFinal({desc:d.desc,monto:d.monto,cat:d.cat,fecha:d.fecha,nota:'Pago automático',pagado:true,tarjetaId:d.tarjetaId||''});
     } else {
       // Registrar como pendiente (NO descuenta del saldo)
       const hoy2=new Date(), mes2=hoy2.getMonth(), anio2=hoy2.getFullYear();
@@ -1383,7 +1613,8 @@ const UI = {
         pends.push({
           id:'pend_serv_'+Date.now().toString(36),
           claveMes, descripcion:d.desc, monto:d.monto, categoria:d.cat,
-          fechaVence:d.fecha, pagado:false, prioridad:true, recurrenteId:null
+          fechaVence:d.fecha, pagado:false, prioridad:true, recurrenteId:null,
+          tarjetaId: d.tarjetaId||''
         });
         Store.setPendientes(pends);
       }
@@ -1399,7 +1630,8 @@ const UI = {
         recurrentes.push({
           id:'rec_'+Date.now().toString(36),
           descripcion:d.desc, monto:d.monto, categoria:d.cat,
-          dia:d.diaRec, activo:true, prioridad:false
+          dia:d.diaRec, activo:true, prioridad:false,
+          tarjetaId: d.tarjetaId||''
         });
         Store.setRecurrentes(recurrentes);
       }
@@ -1555,6 +1787,46 @@ const UI = {
     const elNP=document.getElementById('perfil-nombre-txt');
     if(elNP) elNP.textContent=cfg.nombre||'Mi Cuenta';
     this.toast('✓ Perfil guardado');
+  },
+
+  // Activar/desactivar notificaciones del sistema para el límite mensual
+  toggleNotifLimite() {
+    const chk = document.getElementById('cfg-notif-limite');
+    if(!chk) return;
+    if(!chk.checked) {
+      const cfg=Store.getConfig(); cfg.notifLimite=false; Store.setConfig(cfg);
+      return;
+    }
+    if(!('Notification' in window)) {
+      this.toast('❌ Tu navegador no soporta notificaciones');
+      chk.checked=false;
+      return;
+    }
+    if(Notification.permission==='granted') {
+      const cfg=Store.getConfig(); cfg.notifLimite=true; Store.setConfig(cfg);
+      this.toast('🔔 Notificaciones activadas');
+      this._actualizarTextoNotif();
+      return;
+    }
+    if(Notification.permission==='denied') {
+      chk.checked=false;
+      this.toast('🚫 Tienes las notificaciones bloqueadas en el navegador');
+      this._actualizarTextoNotif();
+      return;
+    }
+    Notification.requestPermission().then(permiso => {
+      const cfg=Store.getConfig();
+      if(permiso==='granted') {
+        cfg.notifLimite=true; Store.setConfig(cfg);
+        this.toast('🔔 Notificaciones activadas');
+        new Notification('✓ Mis Finanzas', {body:'Te avisaremos aquí cuando estés cerca de tu límite mensual.'});
+      } else {
+        cfg.notifLimite=false; Store.setConfig(cfg);
+        chk.checked=false;
+        this.toast('No se activaron las notificaciones');
+      }
+      this._actualizarTextoNotif();
+    });
   },
 
   confirmarBorrarDatos() {
@@ -2055,6 +2327,7 @@ const App = {
     // Acciones de pago de tarjeta
     document.getElementById('btn-tc-pagar-completo')?.addEventListener('click',()=>UI.pagarTarjetaCompleto());
     document.getElementById('btn-tc-abonar')?.addEventListener('click',()=>UI.abrirModalAbonarTarjeta());
+    document.getElementById('btn-tc-historial')?.addEventListener('click',()=>UI.verHistorialTarjeta());
     document.getElementById('btn-confirmar-tc-abono')?.addEventListener('click',()=>UI.confirmarAbonoTarjeta());
     document.getElementById('tc-abono-monto')?.addEventListener('keydown',e=>{ if(e.key==='Enter') UI.confirmarAbonoTarjeta(); });
 
@@ -2080,6 +2353,13 @@ const App = {
     document.getElementById('btn-mes-ant')?.addEventListener('click',()=>{ mesActual--; if(mesActual<0){mesActual=11;anioActual--;} this.renderActual(); });
     document.getElementById('btn-mes-sig')?.addEventListener('click',()=>{ mesActual++; if(mesActual>11){mesActual=0;anioActual++;} this.renderActual(); });
 
+    // Filtros avanzados de movimientos
+    document.getElementById('btn-abrir-filtros')?.addEventListener('click',()=>UI.abrirModalFiltros());
+    document.getElementById('btn-limpiar-filtros-inline')?.addEventListener('click',()=>UI.limpiarFiltrosMov());
+    document.getElementById('btn-limpiar-filtros')?.addEventListener('click',()=>UI.limpiarFiltrosMov());
+    document.getElementById('btn-aplicar-filtros')?.addEventListener('click',()=>UI.aplicarFiltrosMov());
+    document.getElementById('filtro-metodo-select')?.addEventListener('change',()=>UI._toggleFiltroTarjetaRow());
+
     // Cerrar modales por fondo
     document.querySelectorAll('.modal-overlay').forEach(ov=>{
       ov.addEventListener('click',e=>{ if(e.target===ov) ov.classList.remove('visible'); });
@@ -2093,6 +2373,7 @@ const App = {
     // Perfil auto-save
     document.getElementById('p-nombre')?.addEventListener('change',()=>UI.guardarPerfil());
     document.getElementById('cfg-oscuro')?.addEventListener('change',()=>UI.guardarPerfil());
+    document.getElementById('cfg-notif-limite')?.addEventListener('change',()=>UI.toggleNotifLimite());
 
     // Copia de seguridad — restaurar
     document.getElementById('input-restaurar-backup')?.addEventListener('change', e => {
@@ -2105,7 +2386,7 @@ const App = {
     // sirva una copia vieja de sw.js desde su caché HTTP, y se recarga la
     // página automáticamente en cuanto la versión nueva toma el control.
     if('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js?v=6', {updateViaCache:'none'})
+      navigator.serviceWorker.register('sw.js?v=11', {updateViaCache:'none'})
         .then(reg => reg.update())
         .catch(()=>{});
       let swRefrescando = false;
