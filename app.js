@@ -68,7 +68,7 @@ const Store = {
   },
 
   borrarTodo() {
-    [this.K_TRANS,this.K_METAS,this.K_CONFIG,this.K_HIST,this.K_SAPL,this.K_RECUR,this.K_PEND,this.K_TARJETAS,this.K_LIMITE,this.K_PRESUP].forEach(k=>localStorage.removeItem(k));
+    [this.K_TRANS,this.K_METAS,this.K_CONFIG,this.K_HIST,this.K_SAPL,this.K_RECUR,this.K_PEND,this.K_TARJETAS,this.K_LIMITE,this.K_PRESUP,this.K_CUOTAS,this.K_EVENTOS].forEach(k=>localStorage.removeItem(k));
   },
 
   // ── Copia de seguridad: exportar/importar todos los datos ──
@@ -87,7 +87,9 @@ const Store = {
         [this.K_LIMITE]:   this._r(this.K_LIMITE, {}),
         [this.K_RECUR]:    this._r(this.K_RECUR, []),
         [this.K_PRESUP]:   this._r(this.K_PRESUP, {}),
-        [this.K_PEND]:     this._r(this.K_PEND, [])
+        [this.K_PEND]:     this._r(this.K_PEND, []),
+        [this.K_CUOTAS]:   this._r(this.K_CUOTAS, []),
+        [this.K_EVENTOS]:  this._r(this.K_EVENTOS, [])
       }
     };
   },
@@ -95,7 +97,7 @@ const Store = {
   // Reemplaza todos los datos actuales con los del backup. Devuelve true/false.
   importarTodo(backup) {
     if(!backup || typeof backup !== 'object' || !backup.datos) return false;
-    const clavesValidas = [this.K_TRANS,this.K_METAS,this.K_CONFIG,this.K_HIST,this.K_SAPL,this.K_TARJETAS,this.K_LIMITE,this.K_RECUR,this.K_PRESUP,this.K_PEND];
+    const clavesValidas = [this.K_TRANS,this.K_METAS,this.K_CONFIG,this.K_HIST,this.K_SAPL,this.K_TARJETAS,this.K_LIMITE,this.K_RECUR,this.K_PRESUP,this.K_PEND,this.K_CUOTAS,this.K_EVENTOS];
     try {
       clavesValidas.forEach(k => {
         if(backup.datos[k] !== undefined) this._w(k, backup.datos[k]);
@@ -118,6 +120,44 @@ const Store = {
   setRecurrentes(a) { return this._w(this.K_RECUR, a); },
   getPresupuesto()  { return this._r(this.K_PRESUP, {nombre:'',ingreso:0,fijos:[],variables:[],extras:[]}); },
   setPresupuesto(p) { return this._w(this.K_PRESUP, p); },
+
+  // Mantiene los "gastos fijos" del presupuesto sincronizados con los
+  // servicios recurrentes y compras a cuotas activos — se llama justo en el
+  // momento en que se agrega, paga o elimina un servicio/cuota, sin
+  // depender de que la pantalla de Presupuesto esté abierta ni de que se
+  // visite después. Así el cambio queda guardado de inmediato.
+  sincronizarFijosPresupuesto() {
+    const guardado = this.getPresupuesto();
+    let fijos = (guardado.fijos || []).map(f => ({...f}));
+
+    const recurrentesActivos = this.getRecurrentes().filter(r => r.activo);
+    const idsRecActivos = new Set(recurrentesActivos.map(r => 'pf_' + r.id));
+    fijos = fijos.filter(f => !(f.id && f.id.startsWith('pf_rec_') && !idsRecActivos.has(f.id)));
+    recurrentesActivos.forEach(r => {
+      const id = 'pf_' + r.id;
+      const item = fijos.find(f => f.id === id);
+      if (item) { item.monto = r.monto; item.desc = r.descripcion; }
+      else fijos.push({ id, desc: r.descripcion, monto: r.monto });
+    });
+
+    const hoy = new Date();
+    const claveMes = `${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}`;
+    const cuotasVigentes = this.getCuotas().filter(c =>
+      c.activo && c.cuotasPagadas < c.cuotasTotales && (!c.mesInicio || c.mesInicio <= claveMes)
+    );
+    const idsCuotaActivas = new Set(cuotasVigentes.map(c => 'pf_cuota_' + c.id));
+    fijos = fijos.filter(f => !(f.id && f.id.startsWith('pf_cuota_') && !idsCuotaActivas.has(f.id)));
+    cuotasVigentes.forEach(c => {
+      const id = 'pf_cuota_' + c.id;
+      const desc = `${c.emoji || '🧾'} ${c.descripcion} (cuota ${c.cuotasPagadas+1} de ${c.cuotasTotales})`;
+      const item = fijos.find(f => f.id === id);
+      if (item) { item.monto = c.montoCuota; item.desc = desc; }
+      else fijos.push({ id, desc, monto: c.montoCuota });
+    });
+
+    guardado.fijos = fijos;
+    this.setPresupuesto(guardado);
+  },
 
   // Pendientes del mes: [{id, descripcion, monto, categoria, fechaVence, pagado, recurrenteId?}]
   K_PEND: 'mf_pendientes_v1',
@@ -162,6 +202,58 @@ const Store = {
       }
     });
     this.setPendientes(pendientes);
+  },
+
+  // Compras a cuotas: [{id, descripcion, montoCuota, categoria, cuotasTotales,
+  //                      cuotasPagadas, dia, activo, fechaCreacion}]
+  K_CUOTAS: 'mf_cuotas_v1',
+  getCuotas()   { return this._r(this.K_CUOTAS, []); },
+  setCuotas(a)  { return this._w(this.K_CUOTAS, a); },
+
+  // Salidas / eventos con presupuesto propio: [{id, nombre, limite, fecha,
+  // emoji, activo}]. Los gastos que pertenecen a una salida se marcan con
+  // eventoId en la transacción (igual que tarjetaId).
+  K_EVENTOS: 'mf_eventos_v1',
+  getEventos()  { return this._r(this.K_EVENTOS, []); },
+  setEventos(a) { return this._w(this.K_EVENTOS, a); },
+  gastadoEvento(eventoId) {
+    return this.getTrans()
+      .filter(t => t.tipo==='gasto' && t.eventoId===eventoId)
+      .reduce((s,t)=>s+t.monto, 0);
+  },
+
+  // Genera el pendiente del mes actual para cada compra a cuotas activa
+  // que todavía no complete todos sus pagos.
+  generarPendientesCuotas() {
+    const hoy = new Date();
+    const mes = hoy.getMonth(), anio = hoy.getFullYear();
+    const claveMes = `${anio}-${String(mes+1).padStart(2,'0')}`;
+    const cuotas = this.getCuotas().filter(c =>
+      c.activo && c.cuotasPagadas < c.cuotasTotales && (!c.mesInicio || c.mesInicio <= claveMes)
+    );
+    const pendientes = this.getPendientes();
+
+    cuotas.forEach(c => {
+      const yaExiste = pendientes.some(p => p.cuotaId === c.id && p.claveMes === claveMes);
+      if (!yaExiste) {
+        const dia = Math.min(c.dia || 1, 28);
+        const numeroCuota = c.cuotasPagadas + 1;
+        pendientes.push({
+          id: 'pend_cuota_' + c.id + '_' + claveMes,
+          cuotaId: c.id,
+          claveMes,
+          descripcion: `${c.descripcion} (cuota ${numeroCuota} de ${c.cuotasTotales})`,
+          monto: c.montoCuota,
+          categoria: c.categoria || 'cuotas',
+          emoji: c.emoji || '',
+          fechaVence: `${anio}-${String(mes+1).padStart(2,'0')}-${String(dia).padStart(2,'0')}`,
+          pagado: false,
+          prioridad: true,
+          tarjetaId: ''
+        });
+      }
+    });
+    this.setPendientes(pendientes);
   }
 };
 
@@ -179,10 +271,12 @@ const AutoCat = {
     { palabras: ['super','supermercado','walmart','despensa','mercado','groceries','compras','verduras','frutas','carnicería','carniceria','panadería','panaderia'], cat: 'supermercado' },
     // Salud
     { palabras: ['farmacia','medicina','medicamento','doctor','médico','medico','hospital','clínica','clinica','dental','dentista','vitamina','pastilla','consulta','laboratorio','examen','salud'], cat: 'salud' },
-    // Servicios
-    { palabras: ['luz','electricidad','agua','internet','wifi','telefono','teléfono','celular','cable','netflix','spotify','streaming','suscripcion','suscripción','seguro','renta','alquiler','gas','recibo','factura'], cat: 'servicios' },
+    // Servicios (recibos del hogar)
+    { palabras: ['luz','electricidad','agua','internet','wifi','telefono','teléfono','celular','cable','gas','recibo','factura'], cat: 'servicios' },
+    // Gastos recurrentes (membresías, suscripciones, cuotas mensuales fijas)
+    { palabras: ['gym','gimnasio','membresia','membresía','mensualidad','netflix','spotify','streaming','suscripcion','suscripción','seguro','renta','alquiler','disney','hbo','youtube premium','icloud','nube'], cat: 'gastos_recurrentes' },
     // Ocio
-    { palabras: ['cine','película','pelicula','concierto','teatro','entretenimiento','juego','videojuego','gym','gimnasio','deporte','hobby','vacacion','vacaciones','tour','paseo','fiesta'], cat: 'ocio' },
+    { palabras: ['cine','película','pelicula','concierto','teatro','entretenimiento','juego','videojuego','deporte','hobby','vacacion','vacaciones','tour','paseo','fiesta'], cat: 'ocio' },
     // Ropa
     { palabras: ['ropa','zapatos','camisa','pantalon','vestido','calzado','blusa','sueter','gorra','tienda','zapatería','zapateria','accesorio'], cat: 'ropa' },
     // Educación
@@ -212,10 +306,12 @@ const CATS = {
     {id:'salud',nombre:'Salud',emoji:'💊'},
     {id:'ocio',nombre:'Ocio',emoji:'🎬'},
     {id:'servicios',nombre:'Servicios',emoji:'💡'},
+    {id:'gastos_recurrentes',nombre:'Gastos recurrentes',emoji:'🔁'},
     {id:'ropa',nombre:'Ropa',emoji:'👕'},
     {id:'educacion',nombre:'Educación',emoji:'📚'},
     {id:'hogar',nombre:'Hogar',emoji:'🏠'},
     {id:'metas_gasto',nombre:'Metas',emoji:'🎯'},
+    {id:'cuotas',nombre:'Cuotas',emoji:'🧾'},
     {id:'pago_tarjeta',nombre:'Pago tarjeta',emoji:'💳'},
     {id:'otros_g',nombre:'Otros',emoji:'📦'},
   ],
@@ -235,6 +331,14 @@ function getCat(id){ return [...CATS.gasto,...CATS.ingreso].find(c=>c.id===id)||
 // ══════════════════════════════════════════════
 const Fmt = {
   monto(n){ return 'Q '+Math.abs(n).toLocaleString('es-GT',{minimumFractionDigits:2,maximumFractionDigits:2}); },
+  // Fecha de HOY en la zona horaria LOCAL del usuario, como 'YYYY-MM-DD'.
+  // OJO: nunca usar new Date().toISOString().slice(0,10) para esto — toISOString()
+  // convierte a UTC, y en Guatemala (UTC-6) eso adelanta la fecha un día
+  // durante buena parte de la tarde/noche.
+  hoyISO(){
+    const d=new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  },
   nombreMes(mes,anio){ return new Date(anio,mes,1).toLocaleDateString('es-GT',{month:'long',year:'numeric'}).replace(/^./,c=>c.toUpperCase()); },
   fechaCorta(iso){
     const[y,m,d]=iso.split('-'); const f=new Date(+y,+m-1,+d);
@@ -365,8 +469,9 @@ const UI = {
 
   // ── Inicio ────────────────────────────────────
   renderInicio() {
-    // Generar pendientes del mes si hay recurrentes
+    // Generar pendientes del mes si hay recurrentes o compras a cuotas
     Store.generarPendientesMes();
+    Store.generarPendientesCuotas();
 
     const trans=Store.getTrans().filter(t=>{
       const[y,m]=t.fecha.split('-');
@@ -391,10 +496,13 @@ const UI = {
 
     const cfg=Store.getConfig();
     document.getElementById('nombre-usuario').textContent=Seguridad.limpiar(cfg.nombre)||'Mi Cuenta';
+    this._actualizarAvatarUI(cfg);
 
     this._actualizarBannerSalario();
     this._renderLimiteGlobal();   // banner rojo si límite excedido
     this._renderPendientesAlerta();
+    this._renderAlertaTarjetas(); // aviso de corte y pagos de tarjeta pendientes
+    this._renderSalidaActivaInicio(); // progreso de salidas activas
     this._renderChips(trans);
     this._renderRecientes(trans);
   },
@@ -436,6 +544,23 @@ const UI = {
     const areaPath = linePath+` L${coords[coords.length-1][0].toFixed(1)},${h} L${coords[0][0].toFixed(1)},${h} Z`;
     const ultimo = coords[coords.length-1];
 
+    // Puntos discretos por cada movimiento — sutiles, y con datos para la
+    // mini-tarjeta que aparece al pasar el cursor/dedo sobre ellos.
+    const marcadores = coords.slice(1, -1).map((p,i)=>{
+      const t = trans[i];
+      const cat = getCat(t.categoria);
+      const emoji = t.emoji || cat.emoji;
+      const desc = Seguridad.limpiar(t.descripcion);
+      return `<g>
+        <circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="1.6" fill="${colorLinea}" opacity="0.55"/>
+        <circle class="punto-hit" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="7" fill="transparent" style="cursor:pointer" data-emoji="${emoji}" data-desc="${desc}" data-cat="${cat.nombre}" data-monto="${Fmt.monto(t.monto)}" data-tipo="${t.tipo}"/>
+      </g>`;
+    }).join('');
+    const tUltimo = trans[trans.length-1];
+    const catUltimo = getCat(tUltimo.categoria);
+    const emojiUltimo = tUltimo.emoji || catUltimo.emoji;
+    const descUltimo = Seguridad.limpiar(tUltimo.descripcion);
+
     cont.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
       <defs>
         <linearGradient id="gradSaldo" x1="0" y1="0" x2="0" y2="1">
@@ -449,8 +574,56 @@ const UI = {
       </defs>
       <path d="${areaPath}" fill="url(#gradSaldo)" stroke="none"/>
       <path d="${linePath}" fill="none" stroke="${colorLinea}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" filter="url(#glowSaldo)"/>
-      <circle cx="${ultimo[0].toFixed(1)}" cy="${ultimo[1].toFixed(1)}" r="3" fill="${colorLinea}" filter="url(#glowSaldo)"/>
+      ${marcadores}
+      <circle cx="${ultimo[0].toFixed(1)}" cy="${ultimo[1].toFixed(1)}" r="3" fill="none" stroke="${colorLinea}" stroke-width="1.5" opacity="0.6">
+        <animate attributeName="r" values="3;9" dur="1.4s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.6;0" dur="1.4s" repeatCount="indefinite"/>
+      </circle>
+      <circle class="punto-hit" cx="${ultimo[0].toFixed(1)}" cy="${ultimo[1].toFixed(1)}" r="3" fill="${colorLinea}" filter="url(#glowSaldo)" style="cursor:pointer" data-emoji="${emojiUltimo}" data-desc="${descUltimo}" data-cat="${catUltimo.nombre}" data-monto="${Fmt.monto(tUltimo.monto)}" data-tipo="${tUltimo.tipo}"/>
     </svg>`;
+
+    this._bindGraficaTooltip(cont);
+  },
+
+  // Mini-tarjeta flotante (icono + descripción + monto) al pasar el cursor
+  // o el dedo sobre un punto de la gráfica de saldo.
+  _bindGraficaTooltip(cont) {
+    const tip = document.getElementById('grafica-tooltip');
+    if (!tip) return;
+
+    const mostrar = (el, x, y) => {
+      const { emoji, desc, cat, monto, tipo } = el.dataset;
+      const signo = tipo === 'ingreso' ? '+' : '-';
+      const bg = tipo === 'ingreso' ? 'var(--ingreso-bg)' : 'var(--gasto-bg)';
+      tip.innerHTML = `<div class="gt-ico" style="background:${bg}">${emoji}</div>
+        <div class="gt-info"><p class="gt-desc">${desc}</p><p class="gt-sub">${cat}</p></div>
+        <p class="gt-monto ${tipo}">${signo} ${monto}</p>`;
+      tip.style.display = 'flex';
+      const tw = 190;
+      let left = x - tw/2;
+      left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+      let top = y - 68;
+      if (top < 8) top = y + 16;
+      tip.style.left = left + 'px';
+      tip.style.top = top + 'px';
+    };
+    const ocultar = () => { tip.style.display = 'none'; };
+
+    cont.querySelectorAll('.punto-hit').forEach(el => {
+      el.addEventListener('mouseenter', e => mostrar(el, e.clientX, e.clientY));
+      el.addEventListener('mousemove',  e => mostrar(el, e.clientX, e.clientY));
+      el.addEventListener('mouseleave', ocultar);
+      el.addEventListener('touchstart', e => {
+        const t = e.touches[0];
+        mostrar(el, t.clientX, t.clientY);
+      }, {passive:true});
+    });
+    if (!this._graficaTooltipDocListener) {
+      document.addEventListener('touchstart', e => {
+        if (!e.target.closest('.punto-hit')) ocultar();
+      }, {passive:true});
+      this._graficaTooltipDocListener = true;
+    }
   },
 
   _renderPendientesAlerta() {
@@ -477,12 +650,13 @@ const UI = {
 
     const itemsPend = pendientes.map(p => {
       const cat = getCat(p.categoria);
+      const icoEmoji = p.emoji || cat.emoji;
       const vence = new Date(p.fechaVence+'T00:00:00');
       const diasFaltan = Math.ceil((vence-hoy)/(1000*60*60*24));
       const urgente = diasFaltan <= 3;
       const tc = p.tarjetaId ? Store.getTarjetas().find(t=>t.id===p.tarjetaId) : null;
       return `<div class="alerta-item ${urgente?'alerta-urgente':''}">
-        <div class="alerta-ico">${cat.emoji}</div>
+        <div class="alerta-ico">${icoEmoji}</div>
         <div class="alerta-info">
           <p class="alerta-desc">${Seguridad.limpiar(p.descripcion)}</p>
           <p class="alerta-sub">${urgente?'⚠️ Vence pronto':'Pendiente'} · ${Fmt.monto(p.monto)}${tc?` · 💳 ${Seguridad.limpiar(tc.nombre)}`:''}</p>
@@ -518,29 +692,7 @@ const UI = {
 
     // Bind botones pagar
     contenedor.querySelectorAll('[data-pend-id]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const pendId = btn.dataset.pendId;
-        // Primero leer el pendiente ANTES de mutar
-        const pend = Store.getPendientes().find(p => p.id === pendId);
-        if (!pend || pend.pagado) return; // ya pagado, ignorar
-        // Marcar como pagado
-        Store.setPendientes(Store.getPendientes().map(p =>
-          p.id === pendId ? {...p, pagado:true} : p
-        ));
-        // Crear transacción real — si el pendiente se creó con tarjeta,
-        // se registra como cargo a esa tarjeta (no descuenta efectivo);
-        // si no, se descuenta del saldo/efectivo como antes.
-        Store.addTrans({
-          id: Date.now().toString(36)+Math.random().toString(36).slice(2,5),
-          tipo:'gasto', descripcion:pend.descripcion, monto:pend.monto,
-          categoria:pend.categoria, fecha:new Date().toISOString().slice(0,10),
-          nota:'Pago de pendiente', pagado:true, prioridad:false,
-          tarjetaId: pend.tarjetaId || ''
-        });
-        App.renderActual();
-        const tc = pend.tarjetaId ? Store.getTarjetas().find(t=>t.id===pend.tarjetaId) : null;
-        this.toast(tc ? `✓ Cargado a ${tc.nombre}` : '✓ Marcado como pagado');
-      });
+      btn.addEventListener('click', () => this._pagarPendiente(btn.dataset.pendId));
     });
     contenedor.querySelectorAll('[data-trans-id]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -554,25 +706,30 @@ const UI = {
     });
     contenedor.querySelectorAll('[data-pend-del-id]').forEach(btn => {
       btn.addEventListener('click', () => {
-        if(!confirm('¿Eliminar este pendiente? Esta acción no se puede deshacer.')) return;
-        // Se marca como "oculto" en vez de borrarlo del array: si viene de un
-        // servicio recurrente, borrarlo del todo hacía que se regenerara solo
-        // en el siguiente render (generarPendientesMes lo volvía a crear).
-        // Marcándolo oculto, este mes ya no vuelve a aparecer, pero el próximo
-        // mes se genera con normalidad.
-        Store.setPendientes(Store.getPendientes().map(p =>
-          p.id === btn.dataset.pendDelId ? {...p, oculto:true} : p
-        ));
-        App.renderActual();
-        this.toast('🗑️ Pendiente eliminado');
+        const id = btn.dataset.pendDelId;
+        const p = Store.getPendientes().find(x => x.id === id);
+        if (!p) return;
+        if (p.recurrenteId || p.cuotaId) {
+          this._abrirEliminarPendienteVinculado(p);
+          return;
+        }
+        this.confirmar('¿Eliminar este pendiente? Esta acción no se puede deshacer.', () => {
+          Store.setPendientes(Store.getPendientes().map(x =>
+            x.id === id ? {...x, oculto:true} : x
+          ));
+          App.renderActual();
+          this.toast('🗑️ Pendiente eliminado');
+        });
       });
     });
     contenedor.querySelectorAll('[data-trans-del-id]').forEach(btn => {
       btn.addEventListener('click', () => {
-        if(!confirm('¿Eliminar este pendiente? Esta acción no se puede deshacer.')) return;
-        Store.delTrans(btn.dataset.transDelId);
-        App.renderActual();
-        this.toast('🗑️ Pendiente eliminado');
+        const id = btn.dataset.transDelId;
+        this.confirmar('¿Eliminar este pendiente? Esta acción no se puede deshacer.', () => {
+          Store.delTrans(id);
+          App.renderActual();
+          this.toast('🗑️ Pendiente eliminado');
+        });
       });
     });
   },
@@ -723,7 +880,183 @@ const UI = {
     return Math.max(0, Math.round((cargos-pagos)*100)/100);
   },
 
+  // ── Ciclo de facturación (corte) ───────────────
+  _diasEnMes(anio, mes) { return new Date(anio, mes+1, 0).getDate(); }, // mes 0-based
+  _fechaCorte(anio, mes, corte) {
+    const dia = Math.min(corte, this._diasEnMes(anio, mes));
+    return new Date(anio, mes, dia);
+  },
+  _fmtFechaISO(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; },
+
+  // Calcula, para una tarjeta con día de corte configurado:
+  // - montoCerrado: lo cargado en el ciclo que ya cerró (lo que hay que pagar ahora)
+  // - montoAbierto: lo cargado en el ciclo actual, todavía acumulando
+  // - montoAPagar: lo que realmente sigue debiéndose de ese ciclo cerrado
+  // - esHoyCorte: si hoy es exactamente el día de corte de esta tarjeta
+  _cicloTarjeta(tc) {
+    const hoy = new Date();
+    const corte = tc.corte || 0;
+    if (!corte) return null;
+
+    let anio = hoy.getFullYear(), mes = hoy.getMonth();
+    let finCerrado;
+    if (hoy.getDate() >= corte) {
+      finCerrado = this._fechaCorte(anio, mes, corte);
+    } else {
+      let mAnt = mes - 1, aAnt = anio;
+      if (mAnt < 0) { mAnt = 11; aAnt -= 1; }
+      finCerrado = this._fechaCorte(aAnt, mAnt, corte);
+    }
+
+    // Inicio del ciclo cerrado = día siguiente al corte anterior a finCerrado
+    let mPrev = finCerrado.getMonth() - 1, aPrev = finCerrado.getFullYear();
+    if (mPrev < 0) { mPrev = 11; aPrev -= 1; }
+    const cortePrev = this._fechaCorte(aPrev, mPrev, corte);
+    const inicioCerrado = new Date(cortePrev); inicioCerrado.setDate(inicioCerrado.getDate()+1);
+
+    // Ciclo abierto: empieza al día siguiente de finCerrado
+    const inicioAbierto = new Date(finCerrado); inicioAbierto.setDate(inicioAbierto.getDate()+1);
+
+    const inicioCerradoStr = this._fmtFechaISO(inicioCerrado);
+    const finCerradoStr    = this._fmtFechaISO(finCerrado);
+    const inicioAbiertoStr = this._fmtFechaISO(inicioAbierto);
+    const hoyStr = this._fmtFechaISO(hoy);
+
+    const cargos = Store.getTrans().filter(t => t.tipo==='gasto' && t.tarjetaId===tc.id);
+    const montoCerrado = cargos.filter(t => t.fecha >= inicioCerradoStr && t.fecha <= finCerradoStr).reduce((s,t)=>s+t.monto,0);
+    const montoAbierto  = cargos.filter(t => t.fecha >= inicioAbiertoStr && t.fecha <= hoyStr).reduce((s,t)=>s+t.monto,0);
+
+    const deudaTotal = this._deudaTarjeta(tc.id);
+    const montoAPagar = montoCerrado>0 ? Math.min(deudaTotal, montoCerrado) : 0;
+    const esHoyCorte = hoyStr === finCerradoStr;
+
+    return { finCerradoStr, montoCerrado, montoAbierto, montoAPagar, esHoyCorte };
+  },
+
+  // Muestra en Inicio el progreso de las salidas activas (límite de gasto
+  // por evento). Al tocarla, lleva a la pantalla de Salidas con esa
+  // tarjeta ya expandida mostrando el detalle.
+  _renderSalidaActivaInicio() {
+    const cont = document.getElementById('salida-activa-inicio');
+    if (!cont) return;
+    const hoy = Fmt.hoyISO();
+    const activas = Store.getEventos().filter(e => e.activo && (!e.fecha || e.fecha >= hoy));
+    if (!activas.length) { cont.style.display='none'; cont.innerHTML=''; return; }
+
+    cont.style.display = 'block';
+    cont.innerHTML = activas.map(ev => {
+      const gastado = Store.gastadoEvento(ev.id);
+      const restante = ev.limite - gastado;
+      const pct = ev.limite>0 ? Math.min(100, Math.round((gastado/ev.limite)*100)) : 0;
+      const excedido = restante < 0;
+      return `<div class="card-salida-mini" data-ir-salida="${ev.id}">
+        <div class="salida-mini-header">
+          <span class="salida-mini-titulo">${ev.emoji||'🎉'} ${Seguridad.limpiar(ev.nombre)}</span>
+          <span class="salida-mini-pct" style="${excedido?'color:var(--gasto)':''}">${pct}%</span>
+        </div>
+        <div class="meta-barra-bg"><div class="meta-barra-fill" style="width:${pct}%;${excedido?'background:var(--gasto)':''}"></div></div>
+        <p class="salida-mini-sub">${excedido?`⚠️ Te pasaste por ${Fmt.monto(Math.abs(restante))}`:`Te quedan ${Fmt.monto(restante)} de ${Fmt.monto(ev.limite)}`}</p>
+      </div>`;
+    }).join('');
+
+    cont.querySelectorAll('[data-ir-salida]').forEach(el => {
+      el.addEventListener('click', () => {
+        this._salidaExpandida = el.dataset.irSalida;
+        App.irA('salidas');
+      });
+    });
+  },
+
+  // Aviso arriba en Inicio: tarjetas en día de corte hoy, y tarjetas con un
+  // monto ya cerrado (del corte anterior) que sigue pendiente de pago.
+  _renderAlertaTarjetas() {
+    const tarjetas = Store.getTarjetas().filter(tc => tc.corte);
+    const bannerCorte = document.getElementById('banner-corte-tarjeta');
+    const alertaPago  = document.getElementById('alerta-pago-tarjetas');
+    if (!bannerCorte || !alertaPago) return;
+
+    const enCorteHoy = [];
+    const porPagar = [];
+    tarjetas.forEach(tc => {
+      const ciclo = this._cicloTarjeta(tc);
+      if (!ciclo) return;
+      if (ciclo.esHoyCorte) enCorteHoy.push(tc);
+      if (ciclo.montoAPagar > 0) porPagar.push({ tc, ciclo });
+    });
+
+    if (enCorteHoy.length) {
+      const nombres = enCorteHoy.map(tc => Seguridad.limpiar(tc.nombre)).join(', ');
+      bannerCorte.style.display = 'block';
+      bannerCorte.style.margin = '0 1rem 0.75rem';
+      bannerCorte.innerHTML = `<div class="banner-limite" style="--lim-color:#f59e0b;border-color:#f59e0b;background:#f59e0b18">
+        <div class="banner-limite-ico">💳</div>
+        <div class="banner-limite-info">
+          <p class="banner-limite-titulo" style="color:#f59e0b">Tarjeta en día de corte</p>
+          <p class="banner-limite-detalle">${nombres} — Esta tarjeta tiene su corte el día de hoy, asegúrate de revisar tus transacciones.</p>
+        </div>
+      </div>`;
+    } else {
+      bannerCorte.style.display = 'none';
+      bannerCorte.innerHTML = '';
+    }
+
+    if (porPagar.length) {
+      alertaPago.style.display = 'block';
+      alertaPago.style.margin = '0 1rem 0.75rem';
+      alertaPago.innerHTML = porPagar.map(({tc, ciclo}) => `
+        <div class="banner-limite" style="--lim-color:#2563eb;border-color:#2563eb;background:#2563eb18;margin-bottom:8px;cursor:pointer" data-ver-tc="${tc.id}">
+          <div class="banner-limite-ico">💳</div>
+          <div class="banner-limite-info">
+            <p class="banner-limite-titulo" style="color:#2563eb">Pagar ${Seguridad.limpiar(tc.nombre)}</p>
+            <p class="banner-limite-detalle">Corte del ${Fmt.fechaCorta(ciclo.finCerradoStr)}: <strong>${Fmt.monto(ciclo.montoAPagar)}</strong></p>
+          </div>
+        </div>`).join('');
+      alertaPago.querySelectorAll('[data-ver-tc]').forEach(el => {
+        el.addEventListener('click', () => this.abrirAccionesTarjeta(el.dataset.verTc));
+      });
+    } else {
+      alertaPago.style.display = 'none';
+      alertaPago.innerHTML = '';
+    }
+  },
+
+  // Igual que arriba pero solo el aviso de "día de corte", para mostrarlo
+  // también dentro de la pantalla de Tarjetas.
+  _renderAvisoCorteEnTarjetas() {
+    const cont = document.getElementById('banner-corte-tarjetas-pantalla');
+    if (!cont) return;
+    const enCorteHoy = Store.getTarjetas().filter(tc => {
+      const ciclo = tc.corte ? this._cicloTarjeta(tc) : null;
+      return ciclo && ciclo.esHoyCorte;
+    });
+    if (!enCorteHoy.length) { cont.style.display='none'; cont.innerHTML=''; return; }
+    const nombres = enCorteHoy.map(tc => Seguridad.limpiar(tc.nombre)).join(', ');
+    cont.style.display = 'block';
+    cont.style.margin = '0.75rem 1rem 1.1rem';
+    cont.innerHTML = `<div class="banner-limite" style="--lim-color:#f59e0b;border-color:#f59e0b;background:#f59e0b18">
+      <div class="banner-limite-ico">💳</div>
+      <div class="banner-limite-info">
+        <p class="banner-limite-titulo" style="color:#f59e0b">Tarjeta en día de corte</p>
+        <p class="banner-limite-detalle">${nombres} — Esta tarjeta tiene su corte el día de hoy, asegúrate de revisar tus transacciones.</p>
+      </div>
+    </div>`;
+  },
+
+  // Muestra u oculta el aviso de "hoy es el día de corte" en el formulario
+  // de nueva transacción, según la tarjeta seleccionada.
+  _actualizarAdvertenciaCorte() {
+    const sel = document.getElementById('t-tarjeta');
+    const aviso = document.getElementById('advertencia-corte-trans');
+    if (!sel || !aviso) return;
+    const tcId = sel.value;
+    if (!tcId) { aviso.style.display = 'none'; return; }
+    const tc = Store.getTarjetas().find(t => t.id === tcId);
+    const ciclo = (tc && tc.corte) ? this._cicloTarjeta(tc) : null;
+    aviso.style.display = (ciclo && ciclo.esHoyCorte) ? 'block' : 'none';
+  },
+
   renderTarjetas() {
+    this._renderAvisoCorteEnTarjetas();
     const el = document.getElementById('lista-tarjetas');
     const tarjetas = Store.getTarjetas();
     if(!tarjetas.length) {
@@ -745,6 +1078,12 @@ const UI = {
       card.className = 'card-tc';
       card.style.background = `linear-gradient(135deg,${tc.color},${tc.color}cc)`;
       card.style.cursor = 'pointer';
+      const ciclo = tc.corte ? this._cicloTarjeta(tc) : null;
+      const infoCiclo = ciclo
+        ? (ciclo.montoAPagar>0
+            ? `<p class="tc-ciclo-info">💳 A pagar de este corte: <strong>${Fmt.monto(ciclo.montoAPagar)}</strong></p>`
+            : `<p class="tc-ciclo-info">Acumulado del corte actual: <strong>${Fmt.monto(ciclo.montoAbierto)}</strong></p>`)
+        : '';
       card.innerHTML = `
         <div class="tc-header">
           <div>
@@ -758,6 +1097,7 @@ const UI = {
           <p class="tc-de">${tc.limite?`de ${Fmt.monto(tc.limite)} · Disponible: ${Fmt.monto(disp)}`:'Sin límite configurado'} · <span style="opacity:.85">debes ${Fmt.monto(usado)}</span></p>
         </div>
         ${tc.limite?`<div class="tc-barra-bg"><div class="tc-barra-fill" style="width:${pct}%"></div></div>`:''}
+        ${infoCiclo}
         <div class="tc-footer">
           <span class="tc-corte">${tc.corte?`Corte: día ${tc.corte}`:''}</span>
           <div class="tc-acciones">
@@ -803,7 +1143,7 @@ const UI = {
     Store.addTrans({
       id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),
       tipo:'gasto', descripcion:`Pago tarjeta: ${Seguridad.limpiar(tc.nombre)}`,
-      monto:deuda, categoria:'pago_tarjeta', fecha:new Date().toISOString().slice(0,10),
+      monto:deuda, categoria:'pago_tarjeta', fecha:Fmt.hoyISO(),
       nota:'Pago completo de tarjeta', tarjetaId:'', tarjetaPagoId:tarjetaAccionId, pagado:true
     });
     App.renderActual();
@@ -833,7 +1173,7 @@ const UI = {
     Store.addTrans({
       id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),
       tipo:'gasto', descripcion:`Abono a tarjeta: ${Seguridad.limpiar(tc.nombre)}`,
-      monto:montoFinal, categoria:'pago_tarjeta', fecha:new Date().toISOString().slice(0,10),
+      monto:montoFinal, categoria:'pago_tarjeta', fecha:Fmt.hoyISO(),
       nota:'Abono a tarjeta', tarjetaId:'', tarjetaPagoId:tarjetaAccionId, pagado:true
     });
     this.cerrarModal('modal-tc-abono');
@@ -1062,6 +1402,7 @@ const UI = {
     if(!tarjetas.length||tipoModal!=='gasto'){campo.style.display='none';return;}
     campo.style.display='block';
     sel.innerHTML=`<option value="">💵 Efectivo</option>`+tarjetas.map(t=>`<option value="${t.id}">💳 ${Seguridad.limpiar(t.nombre)}</option>`).join('');
+    this._actualizarAdvertenciaCorte();
   },
 
   _verificarLimite(monto,callback) {
@@ -1222,7 +1563,11 @@ const UI = {
       }).join('');
       el.appendChild(cont);
       cont.querySelectorAll('.btn-hist-pdf').forEach(btn=>{ btn.onclick=()=>{ const h=Store.getHistorial().find(x=>x.claveMes===btn.dataset.clave); if(h){PDF.generar(h);UI.toast('📄 Descargando reporte...');} }; });
-      cont.querySelectorAll('.btn-hist-del').forEach(btn=>{ btn.addEventListener('click',()=>{ if(!confirm(`¿Eliminar historial de ${btn.dataset.clave}?`)) return; Store.delHistorialMes(btn.dataset.clave); this.renderHistorial(); this.toast('Eliminado'); }); });
+      cont.querySelectorAll('.btn-hist-del').forEach(btn=>{ btn.addEventListener('click',()=>{
+        this.confirmar(`¿Eliminar historial de ${btn.dataset.clave}?`, () => {
+          Store.delHistorialMes(btn.dataset.clave); this.renderHistorial(); this.toast('Eliminado');
+        });
+      }); });
     }
   },
 
@@ -1242,8 +1587,7 @@ const UI = {
   renderPerfil() {
     const cfg=Store.getConfig();
     const nombre=Seguridad.limpiar(cfg.nombre)||'';
-    const avatar=document.getElementById('perfil-avatar');
-    if(avatar) avatar.textContent=nombre?nombre[0].toUpperCase():'M';
+    this._actualizarAvatarUI(cfg);
     const elN=document.getElementById('perfil-nombre-txt');
     if(elN) elN.textContent=nombre||'Mi Cuenta';
     const pNombre=document.getElementById('p-nombre');
@@ -1254,6 +1598,82 @@ const UI = {
     if(pNotif) pNotif.checked=!!cfg.notifLimite;
     this._actualizarTextoNotif();
     this.renderTemasGrid(cfg.tema||'verde');
+  },
+
+  // Pinta el avatar: la foto guardada si existe, o la inicial del nombre.
+  // Actualiza tanto el avatar grande de Perfil como el ícono circular de Inicio.
+  _actualizarAvatarUI(cfg) {
+    const avatar = document.getElementById('perfil-avatar');
+    const btnQuitar = document.getElementById('btn-quitar-foto');
+    if (avatar) {
+      if (cfg.foto) {
+        avatar.style.backgroundImage = `url(${cfg.foto})`;
+        avatar.textContent = '';
+        if (btnQuitar) btnQuitar.style.display = 'block';
+      } else {
+        avatar.style.backgroundImage = 'none';
+        const nombre = Seguridad.limpiar(cfg.nombre) || '';
+        avatar.textContent = nombre ? nombre[0].toUpperCase() : 'M';
+        if (btnQuitar) btnQuitar.style.display = 'none';
+      }
+    }
+
+    const btnInicio = document.getElementById('btn-avatar-inicio');
+    const icoInicio = document.getElementById('btn-avatar-inicio-ico');
+    if (btnInicio) {
+      if (cfg.foto) {
+        btnInicio.style.backgroundImage = `url(${cfg.foto})`;
+        btnInicio.style.backgroundSize = 'cover';
+        btnInicio.style.backgroundPosition = 'center';
+        if (icoInicio) icoInicio.style.display = 'none';
+      } else {
+        btnInicio.style.backgroundImage = 'none';
+        if (icoInicio) icoInicio.style.display = 'block';
+      }
+    }
+  },
+
+  // Lee el archivo elegido, lo recorta a un cuadro y lo comprime antes de
+  // guardarlo (así no se llena el almacenamiento local con fotos pesadas).
+  subirFotoPerfil(event) {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { this.toast('⚠️ Selecciona una imagen válida'); event.target.value=''; return; }
+
+    const lector = new FileReader();
+    lector.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const tam = 300;
+        const canvas = document.createElement('canvas');
+        canvas.width = tam; canvas.height = tam;
+        const ctx = canvas.getContext('2d');
+        const lado = Math.min(img.width, img.height);
+        const sx = (img.width - lado) / 2;
+        const sy = (img.height - lado) / 2;
+        ctx.drawImage(img, sx, sy, lado, lado, 0, 0, tam, tam);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+
+        const cfg = Store.getConfig();
+        cfg.foto = dataUrl;
+        Store.setConfig(cfg);
+        this._actualizarAvatarUI(cfg);
+        this.toast('✓ Foto de perfil actualizada');
+      };
+      img.onerror = () => this.toast('⚠️ No se pudo cargar la imagen');
+      img.src = e.target.result;
+    };
+    lector.onerror = () => this.toast('⚠️ No se pudo leer el archivo');
+    lector.readAsDataURL(file);
+    event.target.value = '';
+  },
+
+  quitarFotoPerfil() {
+    const cfg = Store.getConfig();
+    delete cfg.foto;
+    Store.setConfig(cfg);
+    this._actualizarAvatarUI(cfg);
+    this.toast('Foto eliminada');
   },
 
   _actualizarTextoNotif() {
@@ -1284,28 +1704,160 @@ const UI = {
   // ── HTML transacción ──────────────────────────
   _htmlTrans(t) {
     const cat=getCat(t.categoria), signo=t.tipo==='ingreso'?'+':'-';
+    const icoEmoji = t.emoji || cat.emoji;
     const bg=t.tipo==='ingreso'?'var(--ingreso-bg)':'var(--gasto-bg)';
     const nota=t.nota?' · '+Seguridad.limpiar(t.nota):'';
     const autoTag=t.automatico?'<span style="font-size:10px;background:var(--acento-light);color:var(--acento-texto);padding:1px 6px;border-radius:10px;margin-left:4px">Auto</span>':'';
     const tc = t.tarjetaId ? Store.getTarjetas().find(x=>x.id===t.tarjetaId) : null;
     const tcBadge = tc ? `<span class="metodo-pago-badge" style="background:${tc.color}22;color:${tc.color}">💳 ${Seguridad.limpiar(tc.nombre)}</span>` : '';
-    return `<div class="item-trans"><div class="item-ico" style="background:${bg}">${cat.emoji}</div><div class="item-info"><p class="item-desc">${Seguridad.limpiar(t.descripcion)}${autoTag}${tcBadge}</p><p class="item-sub">${cat.nombre}${nota}</p></div><div class="item-der"><p class="item-monto-val ${t.tipo}">${signo} ${Fmt.monto(t.monto)}</p><p class="item-fecha-val">${Fmt.fechaCorta(t.fecha)}</p></div><button class="item-del" data-id="${t.id}" aria-label="Eliminar">✕</button></div>`;
+    return `<div class="item-trans"><div class="item-ico" style="background:${bg}">${icoEmoji}</div><div class="item-info"><p class="item-desc">${Seguridad.limpiar(t.descripcion)}${autoTag}${tcBadge}</p><p class="item-sub">${cat.nombre}${nota}</p></div><div class="item-der"><p class="item-monto-val ${t.tipo}">${signo} ${Fmt.monto(t.monto)}</p><p class="item-fecha-val">${Fmt.fechaCorta(t.fecha)}</p></div><button class="item-del" data-id="${t.id}" aria-label="Eliminar">✕</button></div>`;
   },
 
   _bindDel(el) {
     el.querySelectorAll('.item-del').forEach(btn=>{
       btn.addEventListener('click',()=>{
-        if(!confirm('¿Eliminar esta transacción?')) return;
-        Store.delTrans(btn.dataset.id);
-        App.renderActual();
-        this.toast('Transacción eliminada');
+        const id = btn.dataset.id;
+        const t = Store.getTrans().find(x => x.id === id);
+        if (!t) return;
+        if (t.recurrenteId || t.cuotaId) {
+          this._abrirEliminarVinculado(t);
+          return;
+        }
+        this.confirmar('¿Eliminar esta transacción?', () => {
+          Store.delTrans(id);
+          App.renderActual();
+          this.toast('Transacción eliminada');
+        });
       });
     });
   },
 
+  // Cuando el pago que se quiere borrar viene de un servicio recurrente o de
+  // una compra a cuotas, se pregunta si es un error (debe volver a aparecer
+  // como pendiente) o si se quiere eliminar ese servicio/cuota por completo.
+  // _datosEliminarVinculado guarda { tipo:'transaccion'|'pendiente', obj }
+  _datosEliminarVinculado: null,
+
+  _abrirEliminarVinculado(t) {
+    this._datosEliminarVinculado = { tipo:'transaccion', obj:t };
+    const esCuota = !!t.cuotaId;
+    const texto = document.getElementById('elim-vinc-texto');
+    if (texto) texto.textContent = esCuota
+      ? 'Este pago pertenece a una compra a cuotas. ¿Qué quieres hacer?'
+      : 'Este pago pertenece a un servicio recurrente. ¿Qué quieres hacer?';
+    const btnDeshacer = document.getElementById('btn-elim-vinc-deshacer');
+    if (btnDeshacer) btnDeshacer.textContent = 'Solo deshacer este pago';
+    const btnCompleto = document.getElementById('btn-elim-vinc-completo');
+    if (btnCompleto) btnCompleto.textContent = esCuota
+      ? 'Eliminar la cuota por completo'
+      : 'Eliminar el servicio por completo';
+    this._abrirModal('modal-eliminar-vinculado');
+  },
+
+  // Igual que arriba, pero para una tarea aún NO pagada (desde las alertas
+  // de "Pendientes"). También permite eliminar el servicio/cuota de raíz.
+  _abrirEliminarPendienteVinculado(p) {
+    this._datosEliminarVinculado = { tipo:'pendiente', obj:p };
+    const esCuota = !!p.cuotaId;
+    const texto = document.getElementById('elim-vinc-texto');
+    if (texto) texto.textContent = esCuota
+      ? 'Esta tarea pertenece a una compra a cuotas. ¿Qué quieres hacer?'
+      : 'Esta tarea pertenece a un servicio recurrente. ¿Qué quieres hacer?';
+    const btnDeshacer = document.getElementById('btn-elim-vinc-deshacer');
+    if (btnDeshacer) btnDeshacer.textContent = 'Solo ocultar este mes';
+    const btnCompleto = document.getElementById('btn-elim-vinc-completo');
+    if (btnCompleto) btnCompleto.textContent = esCuota
+      ? 'Eliminar la cuota por completo'
+      : 'Eliminar el servicio por completo';
+    this._abrirModal('modal-eliminar-vinculado');
+  },
+
+  // Solo deshace ESTE pago/tarea puntual, sin tocar el servicio/cuota:
+  // - Si ya estaba pagado: borra la transacción y el pendiente vuelve a aparecer.
+  // - Si aún no estaba pagado: solo se oculta este mes (vuelve el próximo).
+  eliminarVinculadoDeshacer() {
+    const d = this._datosEliminarVinculado;
+    if (!d) return;
+    this.cerrarModal('modal-eliminar-vinculado');
+
+    if (d.tipo === 'pendiente') {
+      const p = d.obj;
+      Store.setPendientes(Store.getPendientes().map(x => x.id===p.id ? {...x, oculto:true} : x));
+      this._datosEliminarVinculado = null;
+      App.renderActual();
+      this.toast('🗑️ Oculto este mes — el próximo vuelve a aparecer');
+      return;
+    }
+
+    const t = d.obj;
+    Store.delTrans(t.id);
+
+    const [y,m] = t.fecha.split('-');
+    const claveMes = `${y}-${m}`;
+    let pendientes = Store.getPendientes();
+
+    if (t.cuotaId) {
+      Store.setCuotas(Store.getCuotas().map(c =>
+        c.id === t.cuotaId ? {...c, cuotasPagadas: Math.max(0, c.cuotasPagadas-1), activo:true} : c
+      ));
+      const existe = pendientes.find(p => p.cuotaId === t.cuotaId && p.claveMes === claveMes);
+      if (existe) {
+        pendientes = pendientes.map(p => p.id===existe.id ? {...p, pagado:false, oculto:false} : p);
+      } else {
+        pendientes.push({
+          id:'pend_cuota_'+t.cuotaId+'_'+claveMes, cuotaId:t.cuotaId, claveMes,
+          descripcion:t.descripcion, monto:t.monto, categoria:t.categoria,
+          emoji:t.emoji||'', fechaVence:t.fecha, pagado:false, prioridad:true, tarjetaId:''
+        });
+      }
+    } else if (t.recurrenteId) {
+      const existe = pendientes.find(p => p.recurrenteId === t.recurrenteId && p.claveMes === claveMes);
+      if (existe) {
+        pendientes = pendientes.map(p => p.id===existe.id ? {...p, pagado:false, oculto:false} : p);
+      } else {
+        pendientes.push({
+          id:'pend_'+t.recurrenteId+'_'+claveMes, recurrenteId:t.recurrenteId, claveMes,
+          descripcion:t.descripcion, monto:t.monto, categoria:t.categoria,
+          fechaVence:t.fecha, pagado:false, prioridad:true, tarjetaId:t.tarjetaId||''
+        });
+      }
+    }
+    Store.setPendientes(pendientes);
+    Store.sincronizarFijosPresupuesto();
+
+    this._datosEliminarVinculado = null;
+    App.renderActual();
+    this.toast('↩️ Pago deshecho — vuelve a aparecer como pendiente');
+  },
+
+  // Elimina el servicio recurrente o la compra a cuotas por completo:
+  // borra este pago/tarea y hace que ya no vuelva a generarse en meses futuros.
+  eliminarVinculadoCompleto() {
+    const d = this._datosEliminarVinculado;
+    if (!d) return;
+    this.cerrarModal('modal-eliminar-vinculado');
+    const obj = d.obj;
+
+    if (d.tipo === 'transaccion') Store.delTrans(obj.id);
+
+    if (obj.cuotaId) {
+      Store.setCuotas(Store.getCuotas().filter(c => c.id !== obj.cuotaId));
+      Store.setPendientes(Store.getPendientes().filter(p => p.cuotaId !== obj.cuotaId));
+      this.toast('🗑️ Compra a cuotas eliminada por completo');
+    } else if (obj.recurrenteId) {
+      Store.setRecurrentes(Store.getRecurrentes().map(r => r.id===obj.recurrenteId ? {...r, activo:false} : r));
+      Store.setPendientes(Store.getPendientes().filter(p => !(p.recurrenteId===obj.recurrenteId && !p.pagado)));
+      this.toast('🗑️ Servicio eliminado — no volverá a aparecer');
+    }
+    Store.sincronizarFijosPresupuesto();
+
+    this._datosEliminarVinculado = null;
+    App.renderActual();
+  },
+
   // ── Modal transacción ─────────────────────────
   abrirModalTrans() {
-    document.getElementById('t-fecha').value=new Date().toISOString().slice(0,10);
+    document.getElementById('t-fecha').value=Fmt.hoyISO();
     document.getElementById('t-monto').value='';
     document.getElementById('t-desc').value='';
     document.getElementById('t-nota').value='';
@@ -1359,6 +1911,8 @@ const UI = {
     if(panelRec&&tipoModal!=='gasto') panelRec.style.display='none';
     // Selector de tarjeta
     this._actualizarSelectorTarjeta();
+    // Selector de salida/evento
+    this._actualizarSelectorEvento();
   },
 
   // Notificación de error tipo tarjeta dentro del modal
@@ -1406,10 +1960,10 @@ const UI = {
     const panelRec  = document.getElementById('panel-recurrente');
     const panelPend = document.getElementById('panel-prioridad');
     if (!panelRec) return;
-    const esServicioGasto = (cat === 'servicios' && tipoModal === 'gasto');
-    // Panel recurrente: solo en servicios
+    const esServicioGasto = ((cat === 'servicios' || cat === 'gastos_recurrentes') && tipoModal === 'gasto');
+    // Panel recurrente: solo en servicios / gastos recurrentes
     panelRec.style.display  = esServicioGasto ? 'block' : 'none';
-    // Panel pendiente: en gastos que NO sean servicios
+    // Panel pendiente: en gastos que NO sean servicios / gastos recurrentes
     if (panelPend) {
       panelPend.style.display = (tipoModal === 'gasto' && !esServicioGasto) ? 'block' : 'none';
     }
@@ -1469,7 +2023,7 @@ const UI = {
     if(!fecha) { this.toast('⚠️ Fecha inválida'); return; }
 
     // Si es servicio → preguntar primero si ya está pagado
-    if(cat==='servicios'&&tipoModal==='gasto') {
+    if((cat==='servicios'||cat==='gastos_recurrentes')&&tipoModal==='gasto') {
       const esRecurrente=document.getElementById('t-es-recurrente')?.checked||false;
       const diaRec=Math.min(28,Math.max(1,parseInt(document.getElementById('t-dia-recurrente')?.value)||1));
       const tarjetaIdServicio = document.getElementById('t-tarjeta')?.value || '';
@@ -1482,13 +2036,14 @@ const UI = {
       return;
     }
 
-    // Leer tarjeta seleccionada
+    // Leer tarjeta y salida seleccionadas
     const tarjetaId = document.getElementById('t-tarjeta')?.value || '';
+    const eventoId  = document.getElementById('t-evento')?.value || '';
 
     // Si es gasto → verificar límite mensual
     if(tipoModal==='gasto' && !esPendiente) {
       this._verificarLimite(monto, ()=>{
-        this._finalizarGuardadoTrans({desc,monto,cat,fecha,nota,esPendiente,tarjetaId});
+        this._finalizarGuardadoTrans({desc,monto,cat,fecha,nota,esPendiente,tarjetaId,eventoId});
       });
       return;
     }
@@ -1502,7 +2057,7 @@ const UI = {
         id:'pend_manual_'+Date.now().toString(36),
         claveMes, descripcion:desc, monto, categoria:cat,
         fechaVence:fecha, pagado:false, prioridad:true, recurrenteId:null,
-        tarjetaId: tarjetaId||''
+        tarjetaId: tarjetaId||'', eventoId: eventoId||''
       });
       Store.setPendientes(pends);
       this.cerrarModal('modal-trans');
@@ -1512,10 +2067,10 @@ const UI = {
     }
 
     // Gasto o ingreso normal → registrar directo
-    this._finalizarGuardadoTrans({desc,monto,cat,fecha,nota,esPendiente:false,tarjetaId:''});
+    this._finalizarGuardadoTrans({desc,monto,cat,fecha,nota,esPendiente:false,tarjetaId:'',eventoId:''});
   },
 
-  _finalizarGuardadoTrans({desc,monto,cat,fecha,nota,esPendiente,tarjetaId}) {
+  _finalizarGuardadoTrans({desc,monto,cat,fecha,nota,esPendiente,tarjetaId,eventoId}) {
     // Verificar límite de tarjeta si se seleccionó una
     if(tarjetaId && tipoModal==='gasto' && !esPendiente) {
       const tc = Store.getTarjetas().find(t=>t.id===tarjetaId);
@@ -1533,7 +2088,7 @@ const UI = {
             <strong style="color:var(--gasto)">Total: ${Fmt.monto(nuevoUsado)} (+${Fmt.monto(nuevoUsado-tc.limite)} del límite)</strong>`;
           document.getElementById('btn-advertencia-continuar')?.addEventListener('click',()=>{
             this.cerrarModal('modal-advertencia-limite');
-            this._registrarTransaccionFinal({desc,monto,cat,fecha,nota,pagado:true,prioridad:false,tarjetaId});
+            this._registrarTransaccionFinal({desc,monto,cat,fecha,nota,pagado:true,prioridad:false,tarjetaId,eventoId});
           },{once:true});
           document.getElementById('btn-advertencia-cancelar')?.addEventListener('click',()=>{
             this.cerrarModal('modal-advertencia-limite');
@@ -1548,22 +2103,22 @@ const UI = {
       const hoy2=new Date(),mes2=hoy2.getMonth(),anio2=hoy2.getFullYear();
       const claveMes=`${anio2}-${String(mes2+1).padStart(2,'0')}`;
       const pends=Store.getPendientes();
-      pends.push({id:'pend_manual_'+Date.now().toString(36),claveMes,descripcion:desc,monto,categoria:cat,fechaVence:fecha,pagado:false,prioridad:true,recurrenteId:null,tarjetaId:tarjetaId||''});
+      pends.push({id:'pend_manual_'+Date.now().toString(36),claveMes,descripcion:desc,monto,categoria:cat,fechaVence:fecha,pagado:false,prioridad:true,recurrenteId:null,tarjetaId:tarjetaId||'',eventoId:eventoId||''});
       Store.setPendientes(pends);
       this.cerrarModal('modal-trans');
       App.renderActual();
       this.toast('🔴 Guardado como pendiente — no descuenta hasta que lo pagues');
       return;
     }
-    this._registrarTransaccionFinal({desc,monto,cat,fecha,nota,pagado:true,prioridad:false,tarjetaId});
+    this._registrarTransaccionFinal({desc,monto,cat,fecha,nota,pagado:true,prioridad:false,tarjetaId,eventoId});
   },
 
-  _registrarTransaccionFinal({desc,monto,cat,fecha,nota,pagado,prioridad,tarjetaId}) {
+  _registrarTransaccionFinal({desc,monto,cat,fecha,nota,pagado,prioridad,tarjetaId,recurrenteId,eventoId}) {
     const t={
       id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),
       tipo:tipoModal,descripcion:desc,monto,categoria:cat,fecha,nota,
       prioridad:prioridad||false, pagado:pagado!==false,
-      tarjetaId: tarjetaId||''
+      tarjetaId: tarjetaId||'', recurrenteId: recurrenteId||null, eventoId: eventoId||null
     };
     if(!Store.addTrans(t)){ this.toast('❌ Error al guardar'); return; }
 
@@ -1587,6 +2142,36 @@ const UI = {
     if(!d) return;
     this.cerrarModal('modal-servicio-pago');
 
+    // Si es recurrente → guardar/ubicar en la lista PRIMERO, para poder
+    // enlazar el pendiente con su recurrenteId y que no se duplique
+    // cuando Store.generarPendientesMes() vuelva a correr.
+    let recurrenteId = null;
+    if(d.esRecurrente) {
+      const recurrentes=Store.getRecurrentes();
+      const existente=recurrentes.find(r=>r.descripcion===d.desc&&r.categoria===d.cat);
+      if(existente) {
+        // Puede existir pero estar desactivado (si antes se "eliminó por
+        // completo") — al volver a crearlo hay que reactivarlo y refrescar
+        // sus datos, si no, se queda invisible para siempre aunque el
+        // usuario crea que lo agregó de nuevo.
+        recurrenteId = existente.id;
+        Store.setRecurrentes(recurrentes.map(r => r.id===existente.id
+          ? {...r, activo:true, monto:d.monto, dia:d.diaRec, tarjetaId:d.tarjetaId||''}
+          : r
+        ));
+      } else {
+        recurrenteId = 'rec_'+Date.now().toString(36);
+        recurrentes.push({
+          id:recurrenteId,
+          descripcion:d.desc, monto:d.monto, categoria:d.cat,
+          dia:d.diaRec, activo:true, prioridad:false,
+          tarjetaId: d.tarjetaId||''
+        });
+        Store.setRecurrentes(recurrentes);
+      }
+      Store.sincronizarFijosPresupuesto();
+    }
+
     if(yaPagado) {
       // Registrar como gasto normal (descuenta del saldo)
       tipoModal='gasto';
@@ -1594,26 +2179,28 @@ const UI = {
       const hoyP=new Date(), mesP=hoyP.getMonth(), anioP=hoyP.getFullYear();
       const claveMesP=`${anioP}-${String(mesP+1).padStart(2,'0')}`;
       const pends=Store.getPendientes().map(p => {
-        if(p.claveMes===claveMesP && p.descripcion===d.desc && !p.pagado)
+        const coincide = recurrenteId ? p.recurrenteId===recurrenteId : p.descripcion===d.desc;
+        if(p.claveMes===claveMesP && coincide && !p.pagado)
           return {...p, pagado:true};
         return p;
       });
       Store.setPendientes(pends);
-      this._registrarTransaccionFinal({desc:d.desc,monto:d.monto,cat:d.cat,fecha:d.fecha,nota:'Pago automático',pagado:true,tarjetaId:d.tarjetaId||''});
+      this._registrarTransaccionFinal({desc:d.desc,monto:d.monto,cat:d.cat,fecha:d.fecha,nota:'Pago automático',pagado:true,tarjetaId:d.tarjetaId||'',recurrenteId});
     } else {
       // Registrar como pendiente (NO descuenta del saldo)
       const hoy2=new Date(), mes2=hoy2.getMonth(), anio2=hoy2.getFullYear();
       const claveMes=`${anio2}-${String(mes2+1).padStart(2,'0')}`;
       // Verificar que no exista ya un pendiente para este servicio este mes
-      const pendExiste = Store.getPendientes().some(p =>
-        p.claveMes===claveMes && p.descripcion===d.desc && !p.pagado
-      );
+      const pendExiste = Store.getPendientes().some(p => {
+        const coincide = recurrenteId ? p.recurrenteId===recurrenteId : p.descripcion===d.desc;
+        return p.claveMes===claveMes && coincide && !p.pagado;
+      });
       if(!pendExiste) {
         const pends=Store.getPendientes();
         pends.push({
-          id:'pend_serv_'+Date.now().toString(36),
+          id: recurrenteId ? ('pend_'+recurrenteId+'_'+claveMes) : ('pend_serv_'+Date.now().toString(36)),
           claveMes, descripcion:d.desc, monto:d.monto, categoria:d.cat,
-          fechaVence:d.fecha, pagado:false, prioridad:true, recurrenteId:null,
+          fechaVence:d.fecha, pagado:false, prioridad:true, recurrenteId,
           tarjetaId: d.tarjetaId||''
         });
         Store.setPendientes(pends);
@@ -1622,20 +2209,6 @@ const UI = {
       App.renderActual();
     }
 
-    // Si es recurrente → guardar en lista
-    if(d.esRecurrente) {
-      const recurrentes=Store.getRecurrentes();
-      const yaExiste=recurrentes.find(r=>r.descripcion===d.desc&&r.categoria===d.cat);
-      if(!yaExiste) {
-        recurrentes.push({
-          id:'rec_'+Date.now().toString(36),
-          descripcion:d.desc, monto:d.monto, categoria:d.cat,
-          dia:d.diaRec, activo:true, prioridad:false,
-          tarjetaId: d.tarjetaId||''
-        });
-        Store.setRecurrentes(recurrentes);
-      }
-    }
     this._datosPendientesServicio=null;
   },
 
@@ -1659,32 +2232,45 @@ const UI = {
     const anterior=cfg.sueldo||0;
 
     if(anterior>0&&nuevoMonto!==anterior) {
-      // Flujo de confirmación de 3 pasos
-      const ok1=confirm(`⚠️ Vas a cambiar el salario\n\nAnterior: ${Fmt.monto(anterior)}\nNuevo: ${Fmt.monto(nuevoMonto)}\n\n¿Estás seguro?`);
-      if(!ok1){ this.toast('Cambio cancelado'); return; }
-
-      const hayTrans=Store.getTrans().some(t=>{ const[y,m]=t.fecha.split('-'); return +m-1===new Date().getMonth()&&+y===new Date().getFullYear(); });
-      if(hayTrans) {
-        const ok2=confirm(`📅 El mes actual ya tiene transacciones.\n\n¿Deseas reiniciar (archivar) el mes actual?\n\n• Aceptar → archiva el mes y empieza de cero\n• Cancelar → solo cambia el salario, el mes no se toca`);
-        if(ok2) {
-          const ok3=confirm(`⚠️ ÚLTIMA CONFIRMACIÓN\n\n¿Ya descargaste el reporte en PDF?\n\n• Aceptar → Sí, continuar\n• Cancelar → No, quiero descargar primero`);
-          if(!ok3) {
+      // Flujo de confirmación de hasta 3 pasos
+      this.confirmar(`⚠️ Vas a cambiar el salario\n\nAnterior: ${Fmt.monto(anterior)}\nNuevo: ${Fmt.monto(nuevoMonto)}\n\n¿Estás seguro?`, () => {
+        const hayTrans=Store.getTrans().some(t=>{ const[y,m]=t.fecha.split('-'); return +m-1===new Date().getMonth()&&+y===new Date().getFullYear(); });
+        if(!hayTrans) {
+          this._aplicarNuevoSalario(nuevoMonto, dia, auto);
+          return;
+        }
+        this.confirmar(`📅 El mes actual ya tiene transacciones.\n\n¿Deseas reiniciar (archivar) el mes actual?\n\n• Aceptar → archiva el mes y empieza de cero\n• Cancelar → solo cambia el salario, el mes no se toca`, () => {
+          this.confirmar(`⚠️ ÚLTIMA CONFIRMACIÓN\n\n¿Ya descargaste el reporte en PDF?\n\n• Aceptar → Sí, continuar\n• Cancelar → No, quiero descargar primero`, () => {
+            Store.cerrarMes(new Date().getMonth(),new Date().getFullYear());
+            // Resetear marcador de sueldo aplicado este mes
+            const claveMes=`${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}`;
+            Store.setSApl(Store.getSApl().filter(k=>k!==claveMes));
+            this.toast('✓ Mes archivado');
+            this._aplicarNuevoSalario(nuevoMonto, dia, auto);
+          }, 'Sí, continuar', () => {
+            // No ha descargado el reporte todavía: se lo descargamos y NO
+            // se aplica el cambio de salario ni se archiva el mes todavía.
             const mes=new Date().getMonth(), anio=new Date().getFullYear();
             const transMes=Store.getTrans().filter(t=>{ const[y,m]=t.fecha.split('-'); return +m-1===mes&&+y===anio; });
             if(transMes.length) PDF.generar({transacciones:transMes,nombre:Fmt.nombreMes(mes,anio)});
             this.toast('📄 Descargando reporte. Intenta de nuevo después.');
-            return;
-          }
-          Store.cerrarMes(new Date().getMonth(),new Date().getFullYear());
-          // Resetear marcador de sueldo aplicado este mes
-          const claveMes=`${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}`;
-          Store.setSApl(Store.getSApl().filter(k=>k!==claveMes));
-          this.toast('✓ Mes archivado');
-        }
-      }
+          });
+        }, 'Archivar', () => {
+          // No quiere archivar: aplica el salario nuevo sin tocar el mes actual.
+          this._aplicarNuevoSalario(nuevoMonto, dia, auto);
+        });
+      }, 'Continuar', () => {
+        this.toast('Cambio cancelado');
+      });
+      return;
     }
 
+    this._aplicarNuevoSalario(nuevoMonto, dia, auto);
+  },
+
+  _aplicarNuevoSalario(nuevoMonto, dia, auto) {
     // Aplicar el nuevo salario en config
+    const cfg=Store.getConfig();
     cfg.sueldo=nuevoMonto; cfg.diaSueldo=dia; cfg.sueldoActivo=auto;
     Store.setConfig(cfg);
 
@@ -1716,6 +2302,405 @@ const UI = {
     this.cerrarModal('modal-editar-salario');
     App.renderActual();
     this.toast('✓ Salario actualizado y saldo reflejado');
+  },
+
+  // Marca un pendiente como pagado, crea la transacción real y, si viene
+  // de una compra a cuotas, suma el progreso de esa cuota. Compartido entre
+  // las alertas de "Pendientes" y la pantalla de "Cuotas".
+  _pagarPendiente(pendId) {
+    const pend = Store.getPendientes().find(p => p.id === pendId);
+    if (!pend || pend.pagado) return; // ya pagado, ignorar
+
+    Store.setPendientes(Store.getPendientes().map(p =>
+      p.id === pendId ? {...p, pagado:true} : p
+    ));
+    // Crear transacción real — si el pendiente se creó con tarjeta,
+    // se registra como cargo a esa tarjeta (no descuenta efectivo);
+    // si no, se descuenta del saldo/efectivo como antes.
+    Store.addTrans({
+      id: Date.now().toString(36)+Math.random().toString(36).slice(2,5),
+      tipo:'gasto', descripcion:pend.descripcion, monto:pend.monto,
+      categoria:pend.categoria, fecha:Fmt.hoyISO(),
+      nota: pend.cuotaId ? 'Pago de cuota' : 'Pago de pendiente', pagado:true, prioridad:false,
+      tarjetaId: pend.tarjetaId || '', emoji: pend.emoji || '',
+      cuotaId: pend.cuotaId || null, recurrenteId: pend.recurrenteId || null,
+      eventoId: pend.eventoId || null
+    });
+
+    const tc = pend.tarjetaId ? Store.getTarjetas().find(t=>t.id===pend.tarjetaId) : null;
+    let mensaje = tc ? `✓ Cargado a ${tc.nombre}` : '✓ Marcado como pagado';
+    if (pend.cuotaId) {
+      const completada = this._marcarCuotaPagada(pend.cuotaId);
+      mensaje = completada ? '🎉 ¡Terminaste de pagar esa compra a cuotas!' : '✓ Cuota pagada';
+    }
+    App.renderActual();
+    this.toast(mensaje);
+  },
+
+  // Suma un pago al progreso de una compra a cuotas. Devuelve true si con
+  // este pago se completaron todas las cuotas.
+  _marcarCuotaPagada(cuotaId) {
+    let completada = false;
+    const cuotas = Store.getCuotas().map(c => {
+      if (c.id !== cuotaId) return c;
+      const pagadas = c.cuotasPagadas + 1;
+      completada = pagadas >= c.cuotasTotales;
+      return {...c, cuotasPagadas: pagadas, activo: !completada};
+    });
+    Store.setCuotas(cuotas);
+    Store.sincronizarFijosPresupuesto();
+    return completada;
+  },
+
+  // ── Compras a cuotas ──────────────────────────
+  renderCuotas() {
+    Store.generarPendientesCuotas();
+    const el = document.getElementById('lista-cuotas');
+    if (!el) return;
+    const cuotas = Store.getCuotas();
+    if (!cuotas.length) {
+      el.innerHTML = `<div class="estado-vacio"><div class="estado-vacio-ico">🧾</div><p>Sin compras a cuotas</p><p>Toca <strong>+</strong> para agregar una</p></div>`;
+      return;
+    }
+    const hoy = new Date();
+    const claveMes = `${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}`;
+    const pendientes = Store.getPendientes();
+
+    el.innerHTML = cuotas.map(c => {
+      const pct = Math.min(100, Math.round((c.cuotasPagadas / c.cuotasTotales) * 100));
+      const terminada = c.cuotasPagadas >= c.cuotasTotales;
+      const pendMes = pendientes.find(p => p.cuotaId === c.id && p.claveMes === claveMes && !p.pagado && !p.oculto);
+      let accionHtml;
+      if (terminada) {
+        accionHtml = `<span class="btn-meta-accion" style="background:var(--acento-light);color:var(--acento-texto)">✓ Completada</span>`;
+      } else if (pendMes) {
+        accionHtml = `<button class="btn-meta-accion btn-abonar" data-pagar-cuota="${c.id}">Pagar cuota de este mes</button>`;
+      } else {
+        accionHtml = `<span class="btn-meta-accion" style="background:var(--fondo);color:var(--texto3)">Ya pagada este mes</span>`;
+      }
+      return `<div class="card-meta">
+        <div class="meta-header">
+          <div class="meta-titulo"><span class="meta-emoji">${c.emoji||'🧾'}</span><span>${Seguridad.limpiar(c.descripcion)}</span></div>
+          <span class="meta-pct">${pct}%</span>
+        </div>
+        <div class="meta-barra-bg"><div class="meta-barra-fill" style="width:${pct}%"></div></div>
+        <div class="meta-nums">
+          <span>Cuota: <strong>${Fmt.monto(c.montoCuota)}</strong></span>
+          <span>Progreso: <strong>${c.cuotasPagadas}/${c.cuotasTotales}</strong></span>
+        </div>
+        <p style="font-size:12.5px;color:var(--texto2);margin:4px 0 2px;font-weight:600">Total: ${Fmt.monto(c.montoCuota*c.cuotasTotales)}</p>
+        <p style="font-size:12px;color:var(--texto3);margin:0 0 8px">Vence el día ${c.dia} de cada mes</p>
+        <div class="meta-acciones">
+          ${accionHtml}
+          <button class="btn-meta-accion btn-eliminar-meta" data-eliminar-cuota="${c.id}">Eliminar</button>
+        </div>
+      </div>`;
+    }).join('');
+
+    el.querySelectorAll('[data-pagar-cuota]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const cuotaId = btn.dataset.pagarCuota;
+        const pend = Store.getPendientes().find(p => p.cuotaId === cuotaId && p.claveMes === claveMes && !p.pagado);
+        if (pend) this._pagarPendiente(pend.id);
+      });
+    });
+    el.querySelectorAll('[data-eliminar-cuota]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.eliminarCuota;
+        this.confirmar('¿Eliminar esta compra a cuotas? Los pagos ya realizados no se borran, pero dejará de generarse cada mes.', () => {
+          Store.setCuotas(Store.getCuotas().filter(c => c.id !== id));
+          // Quitar también el pendiente sin pagar de este mes, si existe
+          Store.setPendientes(Store.getPendientes().filter(p => !(p.cuotaId === id && !p.pagado)));
+          Store.sincronizarFijosPresupuesto();
+          this.renderCuotas();
+          this.toast('🗑️ Compra a cuotas eliminada');
+        });
+      });
+    });
+  },
+
+  abrirModalCuota() {
+    document.getElementById('cu-desc').value='';
+    document.getElementById('cu-monto').value='';
+    document.getElementById('cu-total').value='';
+    document.getElementById('cu-dia').value=Math.min(28,new Date().getDate());
+    document.getElementById('cu-emoji').value='';
+    const chkPagado=document.getElementById('cu-ya-pagado'); if(chkPagado) chkPagado.checked=false;
+    const filaPagadas=document.getElementById('cu-pagadas-row'); if(filaPagadas) filaPagadas.style.display='none';
+    document.getElementById('cu-pagadas').value='';
+    const zonaErr = document.getElementById('zona-error-cuota');
+    if (zonaErr) zonaErr.innerHTML = '';
+    this._abrirModal('modal-cuota');
+    setTimeout(()=>document.getElementById('cu-desc').focus(),350);
+  },
+
+  guardarCuota() {
+    const desc  = Seguridad.limpiar(document.getElementById('cu-desc').value);
+    const monto = Seguridad.limpiarNumero(document.getElementById('cu-monto').value);
+    const totalRaw = parseInt(document.getElementById('cu-total').value);
+    const total = Math.min(60, Math.max(2, isNaN(totalRaw) ? 0 : totalRaw));
+    const dia   = Math.min(28, Math.max(1, parseInt(document.getElementById('cu-dia').value) || 1));
+    const emoji = Seguridad.limpiarEmoji(document.getElementById('cu-emoji').value || '') || '🧾';
+
+    if(!desc)  { this.toast('⚠️ Escribe qué compraste'); return; }
+    if(!monto) { this.toast('⚠️ Ingresa el monto de cada cuota'); return; }
+    if(!totalRaw || totalRaw < 2) { this.toast('⚠️ Deben ser al menos 2 cuotas'); return; }
+
+    // Si el usuario indicó que ya había pagado cuotas antes de registrarla
+    const yaPagado = document.getElementById('cu-ya-pagado')?.checked || false;
+    let cuotasPagadas = 0;
+    if (yaPagado) {
+      const pagadasRaw = parseInt(document.getElementById('cu-pagadas').value);
+      cuotasPagadas = Math.min(total-1, Math.max(0, isNaN(pagadasRaw) ? 0 : pagadasRaw));
+    }
+
+    // Guardamos los datos ya validados y preguntamos, en un segundo paso,
+    // cuándo debe empezar a aparecer.
+    this._datosCuotaPendiente = { desc, monto, total, dia, emoji, cuotasPagadas };
+    this.cerrarModal('modal-cuota');
+    this._abrirModal('modal-cuota-inicio');
+  },
+
+  finalizarGuardarCuota(inicioSel) {
+    const d = this._datosCuotaPendiente;
+    if (!d) return;
+    this.cerrarModal('modal-cuota-inicio');
+
+    const hoy = new Date();
+    let mesInicio;
+    if (inicioSel === 'siguiente') {
+      const nd = new Date(hoy.getFullYear(), hoy.getMonth()+1, 1);
+      mesInicio = `${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,'0')}`;
+    } else {
+      mesInicio = `${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}`;
+    }
+
+    const cuotas = Store.getCuotas();
+    cuotas.push({
+      id: 'cuota_'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),
+      descripcion: d.desc, montoCuota: d.monto, categoria: 'cuotas', emoji: d.emoji,
+      cuotasTotales: d.total, cuotasPagadas: d.cuotasPagadas, dia: d.dia, activo: true, mesInicio,
+      fechaCreacion: Fmt.hoyISO()
+    });
+    Store.setCuotas(cuotas);
+    Store.generarPendientesCuotas();
+    Store.sincronizarFijosPresupuesto();
+
+    this._datosCuotaPendiente = null;
+    App.renderActual();
+    const mensajeInicio = inicioSel === 'siguiente' ? ' — empieza el próximo mes' : '';
+    this.toast(`✓ "${d.desc}" registrada — ${d.total} cuotas de ${Fmt.monto(d.monto)}${mensajeInicio}`);
+  },
+
+  // ── Salidas / presupuesto por evento ───────────
+  _salidaExpandida: null,
+
+  renderSalidas() {
+    const el = document.getElementById('lista-salidas');
+    if (!el) return;
+    const eventos = Store.getEventos();
+    if (!eventos.length) {
+      el.innerHTML = `<div class="estado-vacio"><div class="estado-vacio-ico">🎉</div><p>Sin salidas registradas</p><p>Toca <strong>+</strong> para ponerle límite a tu próxima salida</p></div>`;
+      return;
+    }
+
+    el.innerHTML = eventos.map(ev => {
+      const gastado = Store.gastadoEvento(ev.id);
+      const restante = ev.limite - gastado;
+      const pct = ev.limite>0 ? Math.min(100, Math.round((gastado/ev.limite)*100)) : 0;
+      const excedido = restante < 0;
+      const terminada = !ev.activo;
+      const transEvento = Store.getTrans()
+        .filter(t=>t.tipo==='gasto' && t.eventoId===ev.id)
+        .sort((a,b)=> b.fecha.localeCompare(a.fecha));
+      const expandida = this._salidaExpandida === ev.id;
+
+      const detalle = expandida ? `
+        <div class="salida-detalle">
+          ${transEvento.length
+            ? transEvento.map(t=>{
+                const cat=getCat(t.categoria);
+                return `<div class="salida-item">
+                  <span class="salida-item-ico">${t.emoji||cat.emoji}</span>
+                  <span class="salida-item-desc">${Seguridad.limpiar(t.descripcion)}</span>
+                  <span class="salida-item-monto">${Fmt.monto(t.monto)}</span>
+                </div>`;
+              }).join('')
+            : `<p class="salida-item-vacio">Todavía no hay gastos registrados en esta salida.</p>`}
+        </div>
+        <div class="meta-acciones" style="margin-top:8px">
+          <button class="btn-meta-accion" style="background:#2563eb18;color:#2563eb" data-pdf-salida="${ev.id}">📄 Descargar PDF</button>
+          <button class="btn-meta-accion btn-eliminar-meta" data-eliminar-salida="${ev.id}">Eliminar</button>
+        </div>` : '';
+
+      return `<div class="card-meta" id="salida-card-${ev.id}">
+        <div class="meta-header">
+          <div class="meta-titulo"><span class="meta-emoji">${ev.emoji||'🎉'}</span><span>${Seguridad.limpiar(ev.nombre)}</span></div>
+          <span class="meta-pct" style="${excedido?'color:var(--gasto)':''}">${pct}%</span>
+        </div>
+        <div class="meta-barra-bg"><div class="meta-barra-fill" style="width:${pct}%;${excedido?'background:var(--gasto)':''}"></div></div>
+        <div class="meta-nums">
+          <span>Límite: <strong>${Fmt.monto(ev.limite)}</strong></span>
+          <span>Gastado: <strong style="${excedido?'color:var(--gasto)':''}">${Fmt.monto(gastado)}</strong></span>
+        </div>
+        <p style="font-size:12px;color:${excedido?'var(--gasto)':'var(--texto3)'};margin:2px 0 8px;font-weight:${excedido?'600':'400'}">${excedido?`⚠️ Te pasaste por ${Fmt.monto(Math.abs(restante))}`:`Te quedan ${Fmt.monto(restante)}`}${ev.fecha?` · ${Fmt.fechaCorta(ev.fecha)}`:''}${terminada?' · <strong>Finalizada</strong>':''}</p>
+        ${detalle}
+        <div class="meta-acciones">
+          <button class="btn-meta-accion btn-abonar" data-ver-salida="${ev.id}">${expandida?'Ocultar detalles':'Ver más detalles'}</button>
+          ${terminada
+            ? `<span class="btn-meta-accion" style="background:var(--fondo);color:var(--texto3)">✓ Finalizada</span>`
+            : `<button class="btn-meta-accion" style="background:var(--acento-light);color:var(--acento-texto)" data-terminar-salida="${ev.id}">Terminar</button>`}
+        </div>
+      </div>`;
+    }).join('');
+
+    el.querySelectorAll('[data-ver-salida]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.verSalida;
+        this._salidaExpandida = (this._salidaExpandida === id) ? null : id;
+        this.renderSalidas();
+      });
+    });
+    el.querySelectorAll('[data-terminar-salida]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.terminarSalida;
+        this.confirmar('¿Marcar esta salida como terminada? Ya no vas a poder agregarle más gastos, pero su historial se conserva aquí.', () => {
+          Store.setEventos(Store.getEventos().map(e => e.id===id ? {...e, activo:false} : e));
+          this.renderSalidas();
+          this._actualizarSelectorEvento();
+          this.toast('✓ Salida marcada como terminada');
+        }, 'Terminar');
+      });
+    });
+    el.querySelectorAll('[data-pdf-salida]').forEach(btn=>{
+      btn.addEventListener('click', ()=> this.descargarPdfSalida(btn.dataset.pdfSalida));
+    });
+    el.querySelectorAll('[data-eliminar-salida]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.eliminarSalida;
+        this.confirmar('¿Eliminar esta salida? Los gastos ya registrados no se borran, solo dejan de estar agrupados aquí.', () => {
+          Store.setEventos(Store.getEventos().filter(e=>e.id!==id));
+          Store.setTrans(Store.getTrans().map(t=> t.eventoId===id ? {...t, eventoId:null} : t));
+          this.renderSalidas();
+          this._actualizarSelectorEvento();
+          this.toast('🗑️ Salida eliminada');
+        });
+      });
+    });
+  },
+
+  abrirModalEvento() {
+    document.getElementById('ev-nombre').value='';
+    document.getElementById('ev-limite').value='';
+    document.getElementById('ev-emoji').value='';
+    document.getElementById('ev-fecha').value=Fmt.hoyISO();
+    this._abrirModal('modal-evento');
+    setTimeout(()=>document.getElementById('ev-nombre').focus(),350);
+  },
+
+  guardarEvento() {
+    const nombre = Seguridad.limpiar(document.getElementById('ev-nombre').value);
+    const limite = Seguridad.limpiarNumero(document.getElementById('ev-limite').value);
+    const emoji  = Seguridad.limpiarEmoji(document.getElementById('ev-emoji').value || '') || '🎉';
+    const fecha  = Seguridad.limpiarFecha(document.getElementById('ev-fecha').value) || Fmt.hoyISO();
+
+    if(!nombre) { this.toast('⚠️ Escribe un nombre para la salida'); return; }
+    if(!limite) { this.toast('⚠️ Ingresa el límite que quieres gastar'); return; }
+
+    const eventos = Store.getEventos();
+    eventos.push({
+      id:'ev_'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),
+      nombre, limite, emoji, fecha, activo:true
+    });
+    Store.setEventos(eventos);
+
+    this.cerrarModal('modal-evento');
+    this.renderSalidas();
+    this._actualizarSelectorEvento();
+    this.toast(`✓ "${nombre}" — límite de ${Fmt.monto(limite)}`);
+  },
+
+  // Genera un PDF con el detalle de gastos de una salida (límite, gastado,
+  // restante/excedido, y el listado completo de movimientos de ese evento).
+  descargarPdfSalida(id) {
+    const ev = Store.getEventos().find(e => e.id === id);
+    if (!ev) return;
+    if (typeof window.jspdf === 'undefined') {
+      this.toast('⚠️ No se pudo cargar el generador de PDF. Revisa tu conexión e intenta de nuevo.');
+      return;
+    }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    const gastado = Store.gastadoEvento(ev.id);
+    const restante = ev.limite - gastado;
+    const excedido = restante < 0;
+    const trans = Store.getTrans()
+      .filter(t => t.tipo==='gasto' && t.eventoId===ev.id)
+      .sort((a,b) => a.fecha.localeCompare(b.fecha));
+
+    doc.setFontSize(18);
+    doc.text(Seguridad.limpiar(ev.nombre) || 'Salida', 14, 20);
+
+    doc.setFontSize(10);
+    doc.setTextColor(110);
+    doc.text(`Fecha: ${ev.fecha ? Fmt.fechaCorta(ev.fecha) : '-'}${ev.activo ? '' : '  ·  Finalizada'}`, 14, 28);
+
+    doc.setFontSize(11);
+    doc.setTextColor(30);
+    doc.text(`Límite:   ${Fmt.monto(ev.limite)}`, 14, 40);
+    doc.text(`Gastado:  ${Fmt.monto(gastado)}`, 14, 47);
+    doc.setTextColor(excedido ? 200 : 30, excedido ? 30 : 30, 30);
+    doc.text(excedido ? `Excedido: ${Fmt.monto(Math.abs(restante))}` : `Restante: ${Fmt.monto(restante)}`, 14, 54);
+
+    let y = 68;
+    doc.setTextColor(30);
+    doc.setFontSize(13);
+    doc.text('Detalle de gastos', 14, y);
+    doc.setDrawColor(220);
+    doc.line(14, y+3, 196, y+3);
+    y += 12;
+
+    doc.setFontSize(10);
+    if (!trans.length) {
+      doc.setTextColor(130);
+      doc.text('Todavía no hay gastos registrados en esta salida.', 14, y);
+    } else {
+      trans.forEach(t => {
+        if (y > 280) { doc.addPage(); y = 20; }
+        const cat = getCat(t.categoria);
+        doc.setTextColor(30);
+        doc.text(`${Fmt.fechaCorta(t.fecha)}`, 14, y);
+        doc.text(`${cat.nombre} — ${Seguridad.limpiar(t.descripcion)}`, 42, y);
+        doc.text(Fmt.monto(t.monto), 196, y, { align: 'right' });
+        y += 7;
+      });
+      doc.setDrawColor(220);
+      doc.line(14, y+1, 196, y+1);
+      y += 9;
+      doc.setFontSize(11);
+      doc.setTextColor(30);
+      doc.text('Total gastado', 42, y);
+      doc.text(Fmt.monto(gastado), 196, y, { align: 'right' });
+    }
+
+    const nombreArchivo = 'salida-' + (Seguridad.limpiar(ev.nombre) || 'evento')
+      .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
+    doc.save(`${nombreArchivo || 'salida'}.pdf`);
+    this.toast('📄 PDF descargado');
+  },
+
+  _actualizarSelectorEvento() {
+    const campo=document.getElementById('campo-evento');
+    const sel=document.getElementById('t-evento');
+    if(!campo||!sel) return;
+    const hoy=Fmt.hoyISO();
+    // Solo se ofrecen salidas activas de hoy en adelante — las de días
+    // pasados se quedan como historial en la pantalla de Salidas, pero ya
+    // no tiene sentido seguir agregándoles gastos nuevos.
+    const eventos=Store.getEventos().filter(e=>e.activo && (!e.fecha || e.fecha>=hoy));
+    if(!eventos.length||tipoModal!=='gasto'){campo.style.display='none';return;}
+    campo.style.display='block';
+    sel.innerHTML=`<option value="">Ninguna</option>`+eventos.map(e=>`<option value="${e.id}">${e.emoji||'🎉'} ${Seguridad.limpiar(e.nombre)}</option>`).join('');
   },
 
   // ── Metas — modales ───────────────────────────
@@ -1756,7 +2741,7 @@ const UI = {
     Store.setMetas(metas);
     if(descontar) {
       const meta=Store.getMetas().find(m=>m.id===metaAbonarId);
-      Store.addTrans({id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),tipo:'gasto',descripcion:`Abono a meta: ${Seguridad.limpiar(meta?.nombre||'')}`,monto,categoria:'metas_gasto',fecha:new Date().toISOString().slice(0,10),nota:'Descontado del saldo'});
+      Store.addTrans({id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),tipo:'gasto',descripcion:`Abono a meta: ${Seguridad.limpiar(meta?.nombre||'')}`,monto,categoria:'metas_gasto',fecha:Fmt.hoyISO(),nota:'Descontado del saldo'});
       this.toast(`✓ Abonado ${Fmt.monto(monto)} y descontado del saldo`);
     } else {
       this.toast(`✓ Abonado ${Fmt.monto(monto)} a la meta`);
@@ -1767,10 +2752,11 @@ const UI = {
   },
 
   eliminarMeta(id) {
-    if(!confirm('¿Eliminar esta meta?')) return;
-    Store.setMetas(Store.getMetas().filter(m=>m.id!==id));
-    this.renderMetas();
-    this.toast('Meta eliminada');
+    this.confirmar('¿Eliminar esta meta?', () => {
+      Store.setMetas(Store.getMetas().filter(m=>m.id!==id));
+      this.renderMetas();
+      this.toast('Meta eliminada');
+    });
   },
 
   // ── Perfil — guardar ──────────────────────────
@@ -1782,8 +2768,7 @@ const UI = {
     App.aplicarTema(cfg);
     const elN=document.getElementById('nombre-usuario');
     if(elN) elN.textContent=cfg.nombre||'Mi Cuenta';
-    const avatar=document.getElementById('perfil-avatar');
-    if(avatar&&cfg.nombre) avatar.textContent=cfg.nombre[0].toUpperCase();
+    this._actualizarAvatarUI(cfg);
     const elNP=document.getElementById('perfil-nombre-txt');
     if(elNP) elNP.textContent=cfg.nombre||'Mi Cuenta';
     this.toast('✓ Perfil guardado');
@@ -1830,11 +2815,13 @@ const UI = {
   },
 
   confirmarBorrarDatos() {
-    if(!confirm('⚠️ ¿Borrar TODOS los datos? Esta acción no se puede deshacer.')) return;
-    if(!confirm('¿Seguro? Se borran transacciones, metas e historial.')) return;
-    Store.borrarTodo();
-    App.renderActual();
-    this.toast('Datos borrados');
+    this.confirmar('⚠️ ¿Borrar TODOS los datos? Esta acción no se puede deshacer.', () => {
+      this.confirmar('¿Seguro? Se borran transacciones, metas e historial.', () => {
+        Store.borrarTodo();
+        App.renderActual();
+        this.toast('Datos borrados');
+      });
+    });
   },
 
   // ── Copia de seguridad ────────────────────────
@@ -1843,7 +2830,7 @@ const UI = {
     const json = JSON.stringify(backup, null, 2);
     const blob = new Blob([json], {type:'application/json'});
     const url  = URL.createObjectURL(blob);
-    const fecha = new Date().toISOString().slice(0,10);
+    const fecha = Fmt.hoyISO();
     const a = document.createElement('a');
     a.href = url;
     a.download = `mis-finanzas-backup-${fecha}.json`;
@@ -1854,24 +2841,25 @@ const UI = {
 
   restaurarBackup(file) {
     if(!file) return;
-    if(!confirm('⚠️ Esto reemplazará todos tus datos actuales con los del archivo. ¿Continuar?')) return;
-    const lector = new FileReader();
-    lector.onload = () => {
-      try {
-        const backup = JSON.parse(lector.result);
-        if(!Store.importarTodo(backup)) {
-          this.toast('❌ El archivo no es una copia de seguridad válida');
-          return;
+    this.confirmar('⚠️ Esto reemplazará todos tus datos actuales con los del archivo. ¿Continuar?', () => {
+      const lector = new FileReader();
+      lector.onload = () => {
+        try {
+          const backup = JSON.parse(lector.result);
+          if(!Store.importarTodo(backup)) {
+            this.toast('❌ El archivo no es una copia de seguridad válida');
+            return;
+          }
+          this.toast('✓ Datos restaurados');
+          const cfg = Store.getConfig();
+          App.aplicarTema(cfg);
+          App.renderActual();
+        } catch {
+          this.toast('❌ No se pudo leer el archivo');
         }
-        this.toast('✓ Datos restaurados');
-        const cfg = Store.getConfig();
-        App.aplicarTema(cfg);
-        App.renderActual();
-      } catch {
-        this.toast('❌ No se pudo leer el archivo');
-      }
-    };
-    lector.readAsText(file);
+      };
+      lector.readAsText(file);
+    }, 'Continuar');
   },
 
   // ── Menú Más ──────────────────────────────────
@@ -1951,6 +2939,7 @@ const UI = {
 
   renderPresupuesto() {
     const cfg = Store.getConfig();
+    Store.sincronizarFijosPresupuesto(); // por si hubo cambios desde otra pantalla
     const guardado = Store.getPresupuesto();
 
     // Nombre
@@ -1963,17 +2952,8 @@ const UI = {
     const elIngreso = document.getElementById('presup-ingreso');
     if (elIngreso) { elIngreso.value = ingresoBase || ''; elIngreso.oninput = () => this.presupuestoRecalcular(); }
 
-    // Cargar items guardados (o generar desde recurrentes si no hay)
-    if (guardado.fijos && guardado.fijos.length) {
-      this._presupuestoItems.fijos = guardado.fijos.map(f=>({...f}));
-    } else {
-      const recurrentes = Store.getRecurrentes().filter(r => r.activo);
-      this._presupuestoItems.fijos = recurrentes.map(r => ({
-        id: 'pf_' + r.id,
-        desc: r.descripcion,
-        monto: r.monto
-      }));
-    }
+    // Cargar items guardados — "fijos" ya viene sincronizado con servicios/cuotas
+    this._presupuestoItems.fijos = (guardado.fijos || []).map(f=>({...f}));
 
     this._presupuestoItems.extras = (guardado.extras && guardado.extras.length)
       ? guardado.extras.map(e=>({...e}))
@@ -2093,12 +3073,13 @@ const UI = {
   },
 
   presupuestoLimpiar() {
-    if(!confirm('¿Limpiar "Otros gastos" y "Lo que quiero adquirir"?\n\nLos gastos fijos del mes se mantienen.')) return;
-    this._presupuestoItems.variables = [];
-    this._presupuestoItems.extras = [];
-    this._presupuestoRenderListas();
-    this.presupuestoRecalcular();
-    this.toast('🗑️ Secciones limpiadas');
+    this.confirmar('¿Limpiar "Otros gastos" y "Lo que quiero adquirir"?\n\nLos gastos fijos del mes se mantienen.', () => {
+      this._presupuestoItems.variables = [];
+      this._presupuestoItems.extras = [];
+      this._presupuestoRenderListas();
+      this.presupuestoRecalcular();
+      this.toast('🗑️ Secciones limpiadas');
+    });
   },
 
   presupuestoDescargarPDF() {
@@ -2212,6 +3193,156 @@ ${donutSVG}
     el.textContent=msg; el.classList.add('visible');
     clearTimeout(UI._tt);
     UI._tt=setTimeout(()=>el.classList.remove('visible'),2600);
+  },
+
+  // Modal de confirmación reutilizable — reemplaza confirm() nativo del
+  // navegador (que en algunos móviles puede dejar "atascado" el siguiente
+  // toque en la pantalla). Uso: this.confirmar('¿Texto?', () => { ...accion... });
+  // onCancelar es opcional: se ejecuta si el usuario cancela en vez de confirmar.
+  _confirmCallback: null,
+  _cancelCallback: null,
+  confirmar(texto, onConfirmar, tituloBoton, onCancelar) {
+    const elTexto = document.getElementById('confirmar-texto');
+    if (elTexto) elTexto.textContent = texto;
+    const btn = document.getElementById('btn-confirmar-aceptar');
+    if (btn) btn.textContent = tituloBoton || 'Eliminar';
+    this._confirmCallback = onConfirmar;
+    this._cancelCallback = onCancelar || null;
+    this._abrirModal('modal-confirmar');
+  },
+  _ejecutarConfirmacion() {
+    const cb = this._confirmCallback;
+    this.cerrarModal('modal-confirmar');
+    this._confirmCallback = null;
+    this._cancelCallback = null;
+    if (cb) cb();
+  },
+  _cancelarConfirmacion() {
+    const cbCancel = this._cancelCallback;
+    this.cerrarModal('modal-confirmar');
+    this._confirmCallback = null;
+    this._cancelCallback = null;
+    if (cbCancel) cbCancel();
+  },
+
+  // ── Tutorial interactivo (spotlight) ───────────
+  // Cada paso navega a la pantalla real y resalta el elemento real de la
+  // interfaz con una explicación al lado — no son tarjetas de texto sueltas.
+  _tutorialPasos: [
+    { pantalla:'inicio', selector:'#card-saldo-el', titulo:'Tu saldo', texto:'Aquí ves tu saldo disponible del mes, y una gráfica de cómo se ha ido moviendo.' },
+    { pantalla:'inicio', selector:'#alertas-pendientes', titulo:'Pendientes de pago', texto:'Cuando tengas servicios, cuotas o tarjetas por pagar, van a aparecer aquí para que no se te olviden.' },
+    { pantalla:'inicio', selector:'#btn-fab', titulo:'Agregar un movimiento', texto:'Toca este botón "+" cada vez que quieras registrar un gasto o un ingreso nuevo.' },
+    { pantalla:'transacciones', selector:'#btn-abrir-filtros', titulo:'Transacciones', texto:'Aquí ves todo tu historial. Con este botón puedes filtrar por tipo, categoría o buscar algo específico.' },
+    { pantalla:'tarjetas', selector:'#pantalla-tarjetas .btn-accion-top', titulo:'Tus tarjetas', texto:'Agrega tus tarjetas de crédito con su día de corte — la app calcula sola cuánto debes pagar cada mes y te avisa a tiempo.' },
+    { pantalla:'inicio', selector:'#btn-mas-menu', titulo:'Más opciones', texto:'Aquí encuentras Metas, Cuotas, Salidas, Presupuesto e Historial — el resto de funciones de la app.' },
+    { pantalla:'inicio', selector:'.nav-btn[data-pantalla="inicio"]', titulo:'¡Listo!', texto:'Eso es todo por ahora. Puedes repetir este recorrido cuando quieras desde Perfil → Ayuda → "Ver tutorial de la app". ¡Mucho éxito controlando tus finanzas!' }
+  ],
+  _tutorialIndex: 0,
+  _tutorialResizeBind: null,
+
+  abrirTutorial() {
+    this._tutorialIndex = 0;
+    this._irATutorialPaso(0, 1);
+    if (!this._tutorialResizeBind) {
+      this._tutorialResizeBind = () => {
+        const overlay = document.getElementById('tutorial-overlay');
+        if (overlay && overlay.style.display === 'block') {
+          const paso = this._tutorialPasos[this._tutorialIndex];
+          const el = paso && document.querySelector(paso.selector);
+          if (el) this._posicionarTutorial(el, paso);
+        }
+      };
+      window.addEventListener('resize', this._tutorialResizeBind);
+    }
+  },
+
+  _irATutorialPaso(i, direccion) {
+    if (i < 0) return;
+    if (i >= this._tutorialPasos.length) { this.finalizarTutorial(); return; }
+    const dir = direccion || (i >= this._tutorialIndex ? 1 : -1);
+    this._tutorialIndex = i;
+    const paso = this._tutorialPasos[i];
+
+    // Cerrar cualquier modal abierto que pudiera taparlo
+    document.querySelectorAll('.modal-overlay.visible').forEach(m=>m.classList.remove('visible'));
+
+    const mostrar = () => {
+      const el = document.querySelector(paso.selector);
+      // Si el elemento no existe o está oculto en este momento (ej. no hay
+      // pendientes), se salta ese paso automáticamente en vez de trabarse,
+      // respetando la dirección en la que se estaba navegando.
+      if (!el || el.offsetParent === null) {
+        this._irATutorialPaso(i + dir, dir);
+        return;
+      }
+      el.scrollIntoView({block:'center'});
+      requestAnimationFrame(() => this._posicionarTutorial(el, paso));
+    };
+
+    if (paso.pantalla && paso.pantalla !== App.pantalla) {
+      App.irA(paso.pantalla);
+      setTimeout(mostrar, 220);
+    } else {
+      setTimeout(mostrar, 30);
+    }
+  },
+
+  _posicionarTutorial(el, paso) {
+    const overlay = document.getElementById('tutorial-overlay');
+    const spot = document.getElementById('tutorial-spotlight');
+    const tip = document.getElementById('tutorial-tooltip');
+    if (!overlay || !spot || !tip) return;
+    overlay.style.display = 'block';
+
+    const r = el.getBoundingClientRect();
+    const pad = 8;
+    spot.style.left = (r.left - pad) + 'px';
+    spot.style.top = (r.top - pad) + 'px';
+    spot.style.width = (r.width + pad*2) + 'px';
+    spot.style.height = (r.height + pad*2) + 'px';
+
+    document.getElementById('tutorial-tt-titulo').textContent = paso.titulo;
+    document.getElementById('tutorial-tt-texto').textContent = paso.texto;
+
+    const dots = document.getElementById('tutorial-tt-dots');
+    if (dots) {
+      dots.innerHTML = this._tutorialPasos.map((_,idx)=>
+        `<span class="${idx===this._tutorialIndex?'activo':''}"></span>`
+      ).join('');
+    }
+
+    const btnAtras = document.getElementById('tutorial-tt-atras');
+    if (btnAtras) btnAtras.style.display = this._tutorialIndex>0 ? 'block' : 'none';
+    const btnSig = document.getElementById('tutorial-tt-siguiente');
+    if (btnSig) btnSig.textContent = (this._tutorialIndex === this._tutorialPasos.length-1) ? 'Terminar' : 'Siguiente';
+
+    // Posicionar el globo de texto cerca del elemento, sin salirse de pantalla
+    tip.style.visibility = 'hidden';
+    const tipRect = tip.getBoundingClientRect();
+    let top = r.bottom + pad + 12;
+    if (top + tipRect.height > window.innerHeight - 10) {
+      top = r.top - pad - 12 - tipRect.height;
+    }
+    if (top < 10) top = 10;
+    let left = r.left + r.width/2 - tipRect.width/2;
+    left = Math.max(10, Math.min(left, window.innerWidth - tipRect.width - 10));
+    tip.style.top = top + 'px';
+    tip.style.left = left + 'px';
+    tip.style.visibility = 'visible';
+  },
+
+  tutorialSiguiente() { this._irATutorialPaso(this._tutorialIndex + 1, 1); },
+  tutorialAnterior()  { this._irATutorialPaso(this._tutorialIndex - 1, -1); },
+  saltarTutorial()    { this.finalizarTutorial(); },
+
+  finalizarTutorial() {
+    const overlay = document.getElementById('tutorial-overlay');
+    if (overlay) overlay.style.display = 'none';
+    const cfg = Store.getConfig();
+    if (!cfg.tutorialVisto) {
+      cfg.tutorialVisto = true;
+      Store.setConfig(cfg);
+    }
   }
 };
 
@@ -2243,6 +3374,8 @@ const App = {
       case 'historial':     UI.renderHistorial(); break;
       case 'tarjetas':      UI.renderTarjetas(); break;
       case 'metas':         UI.renderMetas(); break;
+      case 'cuotas':        UI.renderCuotas(); break;
+      case 'salidas':       UI.renderSalidas(); break;
       case 'perfil':        UI.renderPerfil(); break;
       case 'presupuesto':   UI.renderPresupuesto(); break;
     }
@@ -2314,6 +3447,15 @@ const App = {
       if(row) row.style.display=e.target.checked?'flex':'none';
     });
 
+    // Toggle "ya pagué algunas cuotas" en modal de cuotas
+    document.getElementById('cu-ya-pagado')?.addEventListener('change',e=>{
+      const row=document.getElementById('cu-pagadas-row');
+      if(row) row.style.display=e.target.checked?'flex':'none';
+    });
+
+    // Aviso de "día de corte" al elegir tarjeta en el formulario de gasto
+    document.getElementById('t-tarjeta')?.addEventListener('change',()=>UI._actualizarAdvertenciaCorte());
+
     // Guardar transacción
     document.getElementById('btn-guardar-trans')?.addEventListener('click',()=>UI.guardarTransaccion());
     document.getElementById('btn-guardar-tarjeta')?.addEventListener('click',()=>UI.guardarTarjeta());
@@ -2321,6 +3463,8 @@ const App = {
     // Eliminar tarjeta: manejado con onclick directo en el HTML
     document.getElementById('btn-guardar-limite')?.addEventListener('click',()=>UI.guardarLimite());
     document.getElementById('btn-guardar-meta')?.addEventListener('click',()=>UI.guardarMeta());
+    document.getElementById('btn-guardar-cuota')?.addEventListener('click',()=>UI.guardarCuota());
+    document.getElementById('btn-guardar-evento')?.addEventListener('click',()=>UI.guardarEvento());
     document.getElementById('btn-confirmar-abono')?.addEventListener('click',()=>UI.confirmarAbono());
     document.getElementById('btn-confirmar-editar-salario')?.addEventListener('click',()=>UI.guardarEdicionSalario());
 
@@ -2386,7 +3530,7 @@ const App = {
     // sirva una copia vieja de sw.js desde su caché HTTP, y se recarga la
     // página automáticamente en cuanto la versión nueva toma el control.
     if('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js?v=11', {updateViaCache:'none'})
+      navigator.serviceWorker.register('sw.js?v=26', {updateViaCache:'none'})
         .then(reg => reg.update())
         .catch(()=>{});
       let swRefrescando = false;
@@ -2398,6 +3542,11 @@ const App = {
     }
 
     this.irA('inicio');
+
+    // Tutorial de bienvenida — solo la primera vez que se abre la app
+    if (!cfg.tutorialVisto) {
+      setTimeout(()=>UI.abrirTutorial(), 500);
+    }
   }
 };
 
