@@ -1,4 +1,4 @@
-const CACHE = 'mis-finanzas-v11';
+const CACHE = 'mis-finanzas-v26';
 const BASE = '/APP-FINANZAS-ALPHA-V1.0/';
 const ARCHIVOS = [
   BASE,
