@@ -42,7 +42,7 @@ body.oscuro {
   --superficie2:   #0f172a;
   --texto:         #f1f5f9;
   --texto2:        #94a3b8;
-  --texto3:        #475569;
+  --texto3:        #64748b;
   --borde:         #334155;
   --ingreso-bg:    #14532d;
   --gasto-bg:      #450a0a;
@@ -65,8 +65,8 @@ body {
   transition: background var(--trans), color var(--trans);
 }
 
-button { cursor: pointer; font-family: inherit; border: none; background: none; }
-input, select { font-family: inherit; }
+button { cursor: pointer; font-family: inherit; border: none; background: none; color: inherit; }
+input, select { font-family: inherit; color: inherit; }
 input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
 
 /* ══════════════════════════════════════════
@@ -455,6 +455,13 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
   padding: 0 1rem;
 }
 
+.lista-cuotas {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0 1rem;
+}
+
 .card-meta {
   background: var(--superficie);
   border-radius: var(--radio);
@@ -525,6 +532,63 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .btn-abonar:hover { background: var(--acento); color: #fff; }
 .btn-eliminar-meta { background: var(--gasto-bg); color: var(--gasto); }
 .btn-eliminar-meta:hover { background: var(--gasto); color: #fff; }
+
+/* ── Detalle de gastos dentro de una salida ── */
+.salida-detalle {
+  background: var(--fondo);
+  border-radius: var(--radio-xs);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.salida-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.salida-item-ico { flex-shrink: 0; }
+.salida-item-desc {
+  flex: 1;
+  color: var(--texto2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.salida-item-monto {
+  font-weight: 700;
+  color: var(--texto);
+  flex-shrink: 0;
+}
+.salida-item-vacio {
+  font-size: 12px;
+  color: var(--texto3);
+  text-align: center;
+  padding: 4px 0;
+}
+
+.card-salida-mini {
+  background: var(--superficie);
+  border-radius: var(--radio);
+  padding: 0.9rem 1.1rem;
+  box-shadow: var(--sombra);
+  border: 1px solid var(--borde);
+  margin: 0 1rem 0.75rem;
+  cursor: pointer;
+  transition: transform var(--trans);
+}
+.card-salida-mini:active { transform: scale(0.98); }
+.salida-mini-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.salida-mini-titulo { font-size: 14px; font-weight: 700; color: var(--texto); }
+.salida-mini-pct { font-size: 13px; font-weight: 700; color: var(--acento); }
+.salida-mini-sub { font-size: 11.5px; color: var(--texto3); margin-top: 6px; }
 
 /* ══════════════════════════════════════════
    AJUSTES
@@ -887,6 +951,54 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
   transform: translateX(-50%) translateY(0);
 }
 
+/* ── Mini tarjeta flotante al pasar sobre la gráfica de saldo ── */
+.grafica-tooltip {
+  position: fixed;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  width: 190px;
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio-sm);
+  padding: 8px 10px;
+  box-shadow: var(--sombra);
+  z-index: 400;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.gt-ico {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.gt-info { flex: 1; min-width: 0; }
+.gt-desc {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--texto);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gt-sub {
+  font-size: 10.5px;
+  color: var(--texto3);
+  margin-top: 1px;
+}
+.gt-monto {
+  font-size: 12.5px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.gt-monto.ingreso { color: var(--ingreso); }
+.gt-monto.gasto   { color: var(--gasto); }
+
 /* ══════════════════════════════════════════
    NUEVAS SECCIONES v3
 ══════════════════════════════════════════ */
@@ -1111,6 +1223,39 @@ body.oscuro .opcion-radio:has(input:checked) strong {
   justify-content: center;
   flex-shrink: 0;
   text-transform: uppercase;
+  background-size: cover;
+  background-position: center;
+}
+
+.perfil-avatar-wrap {
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.perfil-avatar-editar {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--texto);
+  border: 2px solid var(--superficie);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-quitar-foto {
+  margin-top: 4px;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gasto);
+  cursor: pointer;
 }
 
 .perfil-nombre {
@@ -1435,7 +1580,7 @@ body.oscuro {
   --superficie2:   #070b14;
   --texto:         #e8edf5;
   --texto2:        #8896b0;
-  --texto3:        #4a5568;
+  --texto3:        #64748b;
   --borde:         #1e2a3d;
   --ingreso-bg:    #0a2618;
   --gasto-bg:      #200a0a;
@@ -1605,6 +1750,8 @@ body.oscuro {
 .tc-barra-fill { height: 100%; border-radius: 2px; background: rgba(255,255,255,0.9); transition: width 0.5s; }
 .tc-footer { display: flex; justify-content: space-between; align-items: center; }
 .tc-corte  { font-size: 11px; opacity: 0.7; }
+.tc-ciclo-info { font-size: 11.5px; opacity: 0.9; margin: 2px 0 6px; }
+.tc-ciclo-info strong { font-weight: 700; }
 .tc-acciones { display: flex; gap: 6px; }
 .tc-btn {
   background: rgba(255,255,255,0.2); border: none;
@@ -2000,4 +2147,92 @@ body.oscuro {
 .presup-barra-label {
   font-size: 11px; color: var(--texto3);
   text-align: right; margin-top: 5px;
+}
+/* ══════════════════════════════════════════
+   TUTORIAL INTERACTIVO (spotlight)
+══════════════════════════════════════════ */
+#tutorial-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20000;
+}
+#tutorial-spotlight {
+  position: fixed;
+  border-radius: 16px;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.75);
+  pointer-events: none;
+  z-index: 20001;
+  transition: top 0.3s ease, left 0.3s ease, width 0.3s ease, height 0.3s ease;
+}
+#tutorial-tooltip {
+  position: fixed;
+  z-index: 20002;
+  background: var(--superficie);
+  border-radius: var(--radio);
+  padding: 16px 18px;
+  width: min(88vw, 320px);
+  box-shadow: 0 10px 34px rgba(0,0,0,0.4);
+  transition: top 0.25s ease, left 0.25s ease;
+  visibility: hidden;
+}
+#tutorial-tt-dots {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+#tutorial-tt-dots span {
+  display: inline-block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--borde);
+  transition: all 0.2s;
+}
+#tutorial-tt-dots span.activo {
+  width: 16px;
+  background: var(--acento);
+}
+#tutorial-tt-titulo {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--texto);
+  margin-bottom: 4px;
+}
+#tutorial-tt-texto {
+  font-size: 13px;
+  color: var(--texto2);
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+.tutorial-tt-botones {
+  display: flex;
+  gap: 8px;
+}
+#tutorial-tt-atras, #tutorial-tt-siguiente {
+  flex: 1;
+  padding: 9px;
+  border-radius: var(--radio-xs);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+#tutorial-tt-atras {
+  background: var(--fondo);
+  color: var(--texto);
+  border: 1.5px solid var(--borde);
+  display: none;
+}
+#tutorial-tt-siguiente {
+  background: var(--acento);
+  color: #fff;
+}
+#tutorial-tt-saltar {
+  display: block;
+  width: 100%;
+  text-align: center;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--texto3);
+  font-weight: 600;
+  padding: 4px;
 }
